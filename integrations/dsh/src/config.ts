@@ -36,6 +36,11 @@ export const Config = z.object({
     .default("")
     .description("ReMe workspace directory (empty means ~/.reme)")
     .volatile(),
+  autoStart: z
+    .boolean()
+    .default(false)
+    .description("Start a stopped local ReMe service when DSH starts")
+    .volatile(),
   requestTimeoutMs: z.natural().min(1000).max(120000).default(10000).volatile(),
   backgroundTimeoutMs: z
     .natural()
@@ -106,6 +111,7 @@ const DEFAULT_CONFIG: Readonly<ReMeConfig> = Object.freeze({
   authToken: "",
   pythonPath: "",
   remeWorkspaceDir: "",
+  autoStart: false,
   requestTimeoutMs: 10000,
   backgroundTimeoutMs: 3600000,
   shutdownTimeoutMs: 5000,
@@ -170,6 +176,7 @@ export function resolveConfig(
     typeof config.remeWorkspaceDir === "string"
       ? config.remeWorkspaceDir.trim()
       : "";
+  config.autoStart = config.autoStart === true;
   const home = env.DSH_HOME?.trim() || `${homedir()}/.dsh`;
   const queueDir = config.autoMemoryQueueDir || `${home}/reme-memory/outbox`;
   config.autoMemoryQueueDir = resolve(

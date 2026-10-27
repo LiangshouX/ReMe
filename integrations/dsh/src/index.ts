@@ -27,9 +27,26 @@ export function apply(ctx: Context, input: ReMeConfigInput = {}): void {
     return () => runtime.disposeAll();
   }, "remeMemory.lifecycle()");
   ctx.provide("remeMemory", runtime);
-  ctx.provide("remeEnv", new ReMeEnvManager());
+  const envManager = new ReMeEnvManager();
+  ctx.provide("remeEnv", envManager);
   void ctx.plugin(ReMeStatusGateway);
   void ctx.plugin(ReMeEnvGateway);
+  ctx.effect(() => {
+    const live = current();
+    if (live.autoStart)
+      void envManager
+        .autoStart({
+          endpoint: live.endpoint,
+          pythonPath: live.pythonPath,
+          workspaceDir: live.remeWorkspaceDir,
+        })
+        .catch((error: unknown) => {
+          ctx.logger.warn("remeMemory.envAutoStart failed", {
+            error: String(error),
+          });
+        });
+    return () => {};
+  }, "remeMemory.envAutoStart()");
   ctx.effect(
     () => registerReMeTools(ctx, client, current),
     "remeMemory.tools()",

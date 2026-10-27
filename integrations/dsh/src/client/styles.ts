@@ -70,5 +70,6 @@ export const styles = `
 .reme-env-inline input{flex:1;min-width:0}
 .reme-env-config{padding:4px 0 0}
 .reme-env-group{margin:14px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600;letter-spacing:.02em}
+.reme-env-check-inline{padding:0;border:0}
 @media(max-width:760px){.reme-settings-health,.reme-settings-component-grid,.reme-status-component-grid,.reme-status-capability-grid{grid-template-columns:1fr}.reme-settings-result{display:none}.reme-status-overview-hero{grid-template-columns:1fr}.reme-status-overview-actions{grid-column:1;grid-row:auto;flex-direction:row}.reme-status-overview-actions .reme-status-button{flex:1}.reme-status-file-browser{grid-template-columns:1fr}.reme-status-file-browser>aside{max-height:210px;border-right:0;border-bottom:1px solid var(--dsw-alias-border-l2)}.reme-status-file-browser>article{min-height:300px}.reme-status-task-list summary{grid-template-columns:1fr}}
 `;

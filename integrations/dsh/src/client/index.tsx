@@ -358,6 +358,7 @@ function ReMeSettingsCard({
                   typeof value.remeWorkspaceDir === "string"
                     ? value.remeWorkspaceDir
                     : "",
+                autoStart: value.autoStart === true,
               }
             : undefined,
         );
@@ -761,7 +762,7 @@ function parseDraft(
   draft: Draft,
   passthrough?: Pick<
     ReMeSettings,
-    "authToken" | "pythonPath" | "remeWorkspaceDir"
+    "authToken" | "pythonPath" | "remeWorkspaceDir" | "autoStart"
   >,
 ): ReMeSettings | undefined {
   const requestTimeoutMs = boundedInteger(draft.requestTimeoutMs, 1000, 120000);
@@ -807,6 +808,7 @@ function parseDraft(
     authToken: passthrough?.authToken ?? "",
     pythonPath: passthrough?.pythonPath ?? "",
     remeWorkspaceDir: passthrough?.remeWorkspaceDir ?? "",
+    autoStart: passthrough?.autoStart ?? false,
     requestTimeoutMs: requestTimeoutMs!,
     backgroundTimeoutMs: backgroundTimeoutMs!,
     shutdownTimeoutMs: shutdownTimeoutMs!,

@@ -5,6 +5,11 @@ import { safeError } from "../endpoint.js";
 import type { InstallStatus } from "../pyenv/install.js";
 import type { RemeCheck } from "../pyenv/reme.js";
 import type {
+  ServiceLog,
+  ServiceStartResult,
+  ServiceState,
+} from "../pyenv/service.js";
+import type {
   PythonDetection,
   PythonEnv,
   PythonOrigin,
@@ -111,6 +116,26 @@ export const envEn = {
   testingLlm: "Testing…",
   llmOk: "LLM reachable ({ms} ms)",
   llmFailed: "LLM test failed",
+  serviceHint:
+    "Start or stop the local ReMe service. The service keeps running after DSH closes.",
+  serviceBadgeStarting: "Starting…",
+  serviceBadgeConflict: "Port occupied",
+  serviceBadgeStopped: "Stopped",
+  serviceRunning: "Running",
+  startService: "Start service",
+  stopService: "Stop service",
+  startTimeout: "The service did not become healthy within 90 seconds",
+  stopConfirm:
+    "Stop the ReMe service? Automatic memory in flight may need a retry.",
+  foreignNote:
+    "This service was started outside DSH; its state is shown but it is not managed here.",
+  conflictNote:
+    "Another program occupies this port. Change the service URL port in Memory settings.",
+  viewLogs: "View log",
+  logEmpty: "The service log is empty.",
+  autoStartLabel: "Start the service automatically with DSH",
+  managedNote: "Managed by this plugin · PID {pid}",
+  serviceError: "Service operation failed",
   configTitle: "ReMe parameters",
   controlTitle: "Service control",
   upcoming:
@@ -209,6 +234,22 @@ export const envZh: typeof envEn = {
   testingLlm: "正在测试…",
   llmOk: "LLM 连接正常（{ms} ms）",
   llmFailed: "LLM 测试失败",
+  serviceHint: "启动或停止本地 ReMe 服务；DSH 关闭后服务仍会保持运行。",
+  serviceBadgeStarting: "启动中…",
+  serviceBadgeConflict: "端口被占用",
+  serviceBadgeStopped: "已停止",
+  serviceRunning: "运行中",
+  startService: "启动服务",
+  stopService: "停止服务",
+  startTimeout: "服务在 90 秒内未就绪",
+  stopConfirm: "停止 ReMe 服务？进行中的自动记忆可能需要重试。",
+  foreignNote: "该服务由 DSH 之外的方式启动，这里只显示状态、不由本插件管理。",
+  conflictNote: "端口被其他程序占用；请在『记忆设置』中修改服务地址的端口。",
+  viewLogs: "查看日志",
+  logEmpty: "服务日志为空。",
+  autoStartLabel: "随 DSH 启动时自动拉起服务",
+  managedNote: "由本插件托管 · PID {pid}",
+  serviceError: "服务操作失败",
   configTitle: "ReMe 参数",
   controlTitle: "服务控制",
   upcoming: "该分区将随环境管理特性的后续里程碑提供。",
@@ -264,6 +305,18 @@ interface EnvResultState {
 interface LlmTestState {
   phase: "idle" | "running" | "ok" | "fail";
   result?: LlmTestResult;
+}
+
+interface ServiceViewState {
+  phase: "checking" | "running" | "starting" | "stopped" | "conflict" | "error";
+  data?: ServiceState;
+  error?: string;
+}
+
+interface ServiceLogView {
+  open: boolean;
+  lines: string;
+  logPath: string;
 }
 
 function isLocalEndpoint(endpoint: string): boolean {
@@ -364,6 +417,17 @@ export function ReMeEnvironmentTab({
   const [workspaceInput, setWorkspaceInput] = useState<string | undefined>(
     undefined,
   );
+  const [service, setService] = useState<ServiceViewState>({
+    phase: "checking",
+  });
+  const [serviceTick, setServiceTick] = useState(0);
+  const [stopping, setStopping] = useState(false);
+  const [confirmingStop, setConfirmingStop] = useState(false);
+  const [logView, setLogView] = useState<ServiceLogView>({
+    open: false,
+    lines: "",
+    logPath: "",
+  });
 
   // Derived values must precede hook dependency arrays.
   const detected = detection.phase === "ready" ? detection.data : undefined;
@@ -612,6 +676,41 @@ export function ReMeEnvironmentTab({
     return () => controller.abort();
   }, [loadEnv, workspaceDir, envTick]);
 
+  const loadService = useCallback(
+    async (signal: AbortSignal) => {
+      try {
+        const result = await rpc.call(
+          "/api",
+          "remeEnv/serviceStatus",
+          { args: { input: { endpoint } } },
+          signal,
+        );
+        if (!result.ok)
+          throw new Error(result.error.message || result.error.code);
+        const state = parseServiceState(result.value);
+        setService((current) =>
+          current.phase === "starting"
+            ? current
+            : { phase: state.phase, data: state },
+        );
+      } catch (error) {
+        if (!signal.aborted)
+          setService((current) =>
+            current.phase === "starting"
+              ? current
+              : { phase: "error", error: safeError(error) },
+          );
+      }
+    },
+    [rpc, endpoint],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadService(controller.signal);
+    return () => controller.abort();
+  }, [loadService, serviceTick]);
+
   if (snapshot.status === "unavailable") return null;
 
   const select = (env: PythonEnv): void => {
@@ -748,6 +847,81 @@ export function ReMeEnvironmentTab({
       .catch(() => undefined);
     setWorkspaceInput(undefined);
     setEnvTick((tick) => tick + 1);
+  };
+
+  const startService = async (): Promise<void> => {
+    if (!selectedPath || service.phase === "starting") return;
+    setService({ phase: "starting" });
+    setLogView({ open: false, lines: "", logPath: "" });
+    try {
+      const result = await rpc.call("/api", "remeEnv/serviceStart", {
+        args: {
+          input: { endpoint, pythonPath: selectedPath, workspaceDir },
+        },
+      });
+      if (!result.ok)
+        throw new Error(result.error.message || result.error.code);
+      const started = parseServiceStart(result.value);
+      if (started.error) {
+        setService({ phase: "error", error: started.error });
+        return;
+      }
+      if (started.alreadyRunning) {
+        setService({ phase: "running" });
+        setServiceTick((tick) => tick + 1);
+        return;
+      }
+      const deadline = Date.now() + 90_000;
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        if (Date.now() > deadline) {
+          setService({ phase: "error", error: t("startTimeout") });
+          return;
+        }
+        const statusResult = await rpc.call("/api", "remeEnv/serviceStatus", {
+          args: { input: { endpoint } },
+        });
+        if (!statusResult.ok) continue;
+        const status = parseServiceState(statusResult.value);
+        if (status.phase === "running") {
+          setService({ phase: "running", data: status });
+          return;
+        }
+      }
+    } catch (error) {
+      setService({ phase: "error", error: safeError(error) });
+    }
+  };
+
+  const stopService = async (): Promise<void> => {
+    if (stopping) return;
+    setStopping(true);
+    setConfirmingStop(false);
+    try {
+      const result = await rpc.call("/api", "remeEnv/serviceStop", {
+        args: { input: { endpoint } },
+      });
+      if (!result.ok)
+        throw new Error(result.error.message || result.error.code);
+      setServiceTick((tick) => tick + 1);
+    } catch (error) {
+      setService({ phase: "error", error: safeError(error) });
+    } finally {
+      setStopping(false);
+    }
+  };
+
+  const viewLog = async (): Promise<void> => {
+    try {
+      const result = await rpc.call("/api", "remeEnv/serviceLog", {
+        args: { input: { workspaceDir } },
+      });
+      if (!result.ok) return;
+      const log = parseServiceLog(result.value);
+      setLogView({ open: true, lines: log.lines, logPath: log.logPath });
+    } catch {
+      // Log viewing is diagnostic only.
+    }
   };
 
   return (
@@ -1322,9 +1496,157 @@ export function ReMeEnvironmentTab({
           </section>
           <section className="reme-settings-section">
             <h4>{t("controlTitle")}</h4>
-            <p className="reme-settings-muted reme-env-upcoming">
-              {t("upcoming")}
-            </p>
+            <p className="reme-settings-muted">{t("serviceHint")}</p>
+            <div className="reme-env-row">
+              <span className="reme-env-label">{t("endpointLabel")}</span>
+              <code className="reme-env-endpoint">{endpoint}</code>
+              {service.phase === "checking" || service.phase === "starting" ? (
+                <span className="reme-status-badge progress">
+                  <i />
+                  {t(
+                    service.phase === "starting"
+                      ? "serviceBadgeStarting"
+                      : "checking",
+                  )}
+                </span>
+              ) : service.phase === "running" ? (
+                <span className="reme-status-badge ok">
+                  <i />
+                  {service.data?.version
+                    ? `ReMe ${service.data.version}`
+                    : t("serviceRunning")}
+                </span>
+              ) : service.phase === "conflict" ? (
+                <span className="reme-status-badge progress">
+                  <i />
+                  {t("serviceBadgeConflict")}
+                </span>
+              ) : (
+                <span className="reme-status-badge bad">
+                  <i />
+                  {t("serviceBadgeStopped")}
+                </span>
+              )}
+              <button
+                type="button"
+                className="reme-settings-button"
+                onClick={() => setServiceTick((tick) => tick + 1)}
+              >
+                {t("recheck")}
+              </button>
+            </div>
+            {service.phase === "running" ? (
+              <p className="reme-settings-muted">
+                {service.data?.managed
+                  ? t("managedNote").replace(
+                      "{pid}",
+                      String(service.data?.pid ?? ""),
+                    )
+                  : t("foreignNote")}
+              </p>
+            ) : null}
+            {service.phase === "conflict" ? (
+              <p className="reme-settings-muted">{t("conflictNote")}</p>
+            ) : null}
+            {service.phase === "error" && service.error ? (
+              <p className="reme-settings-error">
+                {`${t("serviceError")}: ${service.error}`}
+              </p>
+            ) : null}
+            <div className="reme-env-actions">
+              {service.phase === "running" ? (
+                confirmingStop ? (
+                  <div className="reme-env-confirm">
+                    <p>{t("stopConfirm")}</p>
+                    <button
+                      type="button"
+                      className="reme-settings-save"
+                      disabled={stopping}
+                      onClick={() => void stopService()}
+                    >
+                      {t("stopService")}
+                    </button>
+                    <button
+                      type="button"
+                      className="reme-settings-discard"
+                      onClick={() => setConfirmingStop(false)}
+                    >
+                      {t("cancel")}
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="reme-settings-button"
+                    disabled={stopping || !service.data?.managed}
+                    onClick={() => setConfirmingStop(true)}
+                  >
+                    {t("stopService")}
+                  </button>
+                )
+              ) : (
+                <button
+                  type="button"
+                  className="reme-settings-save"
+                  disabled={
+                    service.phase === "starting" ||
+                    !checkData?.installed ||
+                    !selectedPath
+                  }
+                  onClick={() => void startService()}
+                >
+                  {t("startService")}
+                </button>
+              )}
+              <button
+                type="button"
+                className="reme-settings-button"
+                onClick={() => void viewLog()}
+              >
+                {t("viewLogs")}
+              </button>
+              <label className="reme-settings-check reme-env-check-inline">
+                <input
+                  type="checkbox"
+                  checked={value?.autoStart === true}
+                  onChange={(event) => {
+                    if (!value || !snapshot.writable) return;
+                    void scope
+                      .mutate(
+                        [
+                          {
+                            op: "set",
+                            path: ["autoStart"],
+                            value: event.target.checked,
+                          },
+                        ],
+                        snapshot.revision,
+                      )
+                      .catch(() => undefined);
+                  }}
+                />
+                <span>{t("autoStartLabel")}</span>
+              </label>
+            </div>
+            {logView.open ? (
+              <div className="reme-env-result">
+                <p className="reme-settings-muted">
+                  {`${t("envPath")}: ${logView.logPath}`}
+                </p>
+                <pre className="reme-env-log">
+                  {logView.lines || t("logEmpty")}
+                </pre>
+                <button
+                  type="button"
+                  className="reme-settings-button"
+                  onClick={() =>
+                    setLogView({ open: false, lines: "", logPath: "" })
+                  }
+                >
+                  {t("dismiss")}
+                </button>
+              </div>
+            ) : null}
           </section>
         </>
       )}
@@ -1386,4 +1708,34 @@ function parseLlmResult(value: unknown): LlmTestResult {
   if (typeof value !== "object" || value === null)
     throw new Error("Invalid LLM test response");
   return value as unknown as LlmTestResult;
+}
+
+function parseServiceState(value: unknown): ServiceState {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    typeof (value as { phase?: unknown }).phase !== "string"
+  )
+    throw new Error("Invalid service status response");
+  return value as unknown as ServiceState;
+}
+
+function parseServiceStart(value: unknown): ServiceStartResult {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    typeof (value as { started?: unknown }).started !== "boolean"
+  )
+    throw new Error("Invalid service start response");
+  return value as unknown as ServiceStartResult;
+}
+
+function parseServiceLog(value: unknown): ServiceLog {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    typeof (value as { lines?: unknown }).lines !== "string"
+  )
+    throw new Error("Invalid service log response");
+  return value as unknown as ServiceLog;
 }

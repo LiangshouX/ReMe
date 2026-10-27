@@ -3,6 +3,11 @@ import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 
 import type { InstallStatus } from "./pyenv/install.js";
 import type { RemeCheck } from "./pyenv/reme.js";
+import type {
+  ServiceLog,
+  ServiceStartResult,
+  ServiceState,
+} from "./pyenv/service.js";
 import type { PythonDetection } from "./pyenv/types.js";
 import type { EnvSummary, LlmTestResult } from "./pyenv/workspace.js";
 import type { ReMeEnvManager } from "./env-manager.js";
@@ -103,6 +108,44 @@ export class ReMeEnvGateway extends TypertRemoteService {
       input?.workspaceDir ?? "",
       input?.pythonPath ?? "",
     );
+  }
+
+  /** Phase of the local ReMe service: running, conflict or stopped. */
+  @Remote("serviceStatus")
+  async serviceStatus(
+    input: { endpoint?: string } | undefined,
+  ): Promise<ServiceState> {
+    return this.ctx.remeEnv.serviceStatus(input?.endpoint ?? "");
+  }
+
+  /** Spawn a detached `reme start`; poll serviceStatus until healthy. */
+  @Remote("serviceStart")
+  async serviceStart(
+    input:
+      | { endpoint?: string; pythonPath?: string; workspaceDir?: string }
+      | undefined,
+  ): Promise<ServiceStartResult> {
+    return this.ctx.remeEnv.serviceStart(
+      input?.endpoint ?? "",
+      input?.pythonPath ?? "",
+      input?.workspaceDir ?? "",
+    );
+  }
+
+  /** Stop the plugin-managed service; foreign instances are untouched. */
+  @Remote("serviceStop")
+  async serviceStop(
+    input: { endpoint?: string } | undefined,
+  ): Promise<{ stopped: boolean; pid?: number }> {
+    return this.ctx.remeEnv.serviceStop(input?.endpoint ?? "");
+  }
+
+  /** Tail of the workspace service log for start-failure diagnosis. */
+  @Remote("serviceLog")
+  async serviceLog(
+    input: { workspaceDir?: string } | undefined,
+  ): Promise<ServiceLog> {
+    return this.ctx.remeEnv.serviceLog(input?.workspaceDir ?? "");
   }
 }
 
