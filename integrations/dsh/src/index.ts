@@ -6,6 +6,8 @@ import type {} from "@deepseek-ai/dsh-session";
 import { ReMeClient } from "./reme/client.js";
 
 import { resolveConfig } from "./config.js";
+import { ReMeEnvGateway } from "./env-gateway.js";
+import { ReMeEnvManager } from "./env-manager.js";
 import { hasGuidance, memoryGuidance, REME_PLUGIN_SOURCE } from "./guidance.js";
 import { ReMeRuntime } from "./runtime.js";
 import { ReMeStatusGateway } from "./status-gateway.js";
@@ -25,7 +27,9 @@ export function apply(ctx: Context, input: ReMeConfigInput = {}): void {
     return () => runtime.disposeAll();
   }, "remeMemory.lifecycle()");
   ctx.provide("remeMemory", runtime);
+  ctx.provide("remeEnv", new ReMeEnvManager());
   void ctx.plugin(ReMeStatusGateway);
+  void ctx.plugin(ReMeEnvGateway);
   ctx.effect(
     () => registerReMeTools(ctx, client, current),
     "remeMemory.tools()",

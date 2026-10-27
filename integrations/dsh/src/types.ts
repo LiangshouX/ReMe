@@ -2,6 +2,8 @@ import type { ReMeClientConfig } from "./reme/types.js";
 
 export interface ReMeConfigInput {
   endpoint?: string;
+  authToken?: string;
+  pythonPath?: string;
   requestTimeoutMs?: number;
   backgroundTimeoutMs?: number;
   shutdownTimeoutMs?: number;
@@ -22,6 +24,8 @@ export interface ReMeConfigInput {
 
 export interface ReMeConfig extends ReMeClientConfig {
   shutdownTimeoutMs: number;
+  authToken: string;
+  pythonPath: string;
   autoMemoryEnabled: boolean;
   autoMemoryInterval: number;
   autoMemoryQueueDir: string;

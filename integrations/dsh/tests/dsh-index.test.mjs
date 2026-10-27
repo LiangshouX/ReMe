@@ -39,7 +39,7 @@ test("composes root-agent guidance and reme_search on supported DSH releases", a
     fiber: { state: 0 },
     logger: { debug() {}, warn() {}, log() {} },
     provide(name, value) {
-      assert.equal(name, "remeMemory");
+      assert.ok(name === "remeMemory" || name === "remeEnv");
       assert.ok(value);
     },
     plugin() {

@@ -52,7 +52,7 @@ test("declares one installable DeepSeek Harness plugin", async () => {
   }
   assert.equal(manifest.peerDependencies.openclaw, undefined);
   assert.match(patch, /remeMemory: true/);
-  assert.match(patch, /id: reme-memory-scope[\s\S]*id: reme-memory\n/);
+  assert.match(patch, /id: reme-memory-scope[\s\S]*id: reme-memory\r?\n/);
   assert.doesNotMatch(patch, /id: reme-memory-runtime/);
   assert.doesNotMatch(patch, /@agentscope-ai\/reme\/dsh/);
   assert.equal(patch.match(/@agentscope-ai\/reme-dsh-plugin/g)?.length, 1);
