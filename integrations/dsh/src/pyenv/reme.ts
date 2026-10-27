@@ -17,6 +17,8 @@ export interface RemeIO {
 export interface RemeProbe {
   installed: boolean;
   version: string;
+  /** True when the version satisfies {@link MINIMUM_REME}. */
+  versionOk: boolean;
 }
 
 export interface RemeCheck extends RemeProbe {
@@ -68,11 +70,15 @@ export async function probeReme(
       timeoutMs: 10_000,
     });
     if (result.error || result.code !== 0)
-      return { installed: false, version: "" };
+      return { installed: false, version: "", versionOk: false };
     const version = parseRemeVersion(result.stdout);
-    return { installed: version !== "", version };
+    return {
+      installed: version !== "",
+      version,
+      versionOk: remeVersionAtLeast(version),
+    };
   } catch {
-    return { installed: false, version: "" };
+    return { installed: false, version: "", versionOk: false };
   }
 }
 

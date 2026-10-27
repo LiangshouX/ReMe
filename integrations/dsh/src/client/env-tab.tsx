@@ -21,6 +21,9 @@ import type { StatusRpc } from "./status-page.js";
 
 const MINICONDA_URL = "https://docs.conda.io/en/latest/miniconda.html";
 
+/** Interpreter rows shown before the list asks to expand. */
+const ENV_PAGE = 6;
+
 export const envEn = {
   connectionTitle: "Service connection",
   endpointLabel: "Service URL",
@@ -138,8 +141,39 @@ export const envEn = {
   serviceError: "Service operation failed",
   configTitle: "ReMe parameters",
   controlTitle: "Service control",
-  upcoming:
-    "This section arrives with the next milestone of the environment feature.",
+  heroEyebrow: "ReMe local runtime",
+  heroReady: "Ready — memory runs locally",
+  heroSetup: "Finish the setup in the steps below",
+  heroService: "Service",
+  heroPython: "Python",
+  heroReme: "ReMe",
+  noneSelected: "not selected",
+  noneDetected: "not detected",
+  envCount: "{count} environments",
+  envRemeCount: "{count} with ReMe",
+  envOthers: "{count} other environments",
+  scannedAt: "Detected at {time}",
+  currentInterpreter: "Current interpreter",
+  notInDetection: "not detected",
+  autoSelected:
+    "The recommended interpreter is used until you pick another one.",
+  savingSelection: "Saving…",
+  changeInterpreter: "Change interpreter",
+  collapseList: "Collapse list",
+  searchPlaceholder: "Filter by version, origin or path",
+  noMatch: "No environment matches the filter.",
+  showAllEnvs: "Show all {count}",
+  showFewer: "Show fewer",
+  depReady: "Ready",
+  depUpgrade: "Upgrade available",
+  depMissing: "Not installed",
+  expand: "Expand",
+  collapse: "Collapse",
+  recommendWhyReme:
+    "Already has a supported reme-ai, and it is a dedicated conda environment.",
+  recommendWhyRemeAny: "Already has a supported reme-ai.",
+  recommendWhyNamed: "Dedicated conda environment, ready for a ReMe install.",
+  recommendWhyFallback: "Fallback: the first usable interpreter.",
 };
 
 export const envZh: typeof envEn = {
@@ -252,7 +286,37 @@ export const envZh: typeof envEn = {
   serviceError: "服务操作失败",
   configTitle: "ReMe 参数",
   controlTitle: "服务控制",
-  upcoming: "该分区将随环境管理特性的后续里程碑提供。",
+  heroEyebrow: "ReMe 本地运行时",
+  heroReady: "已就绪，记忆保存在本地",
+  heroSetup: "按下方步骤完成配置",
+  heroService: "服务",
+  heroPython: "Python",
+  heroReme: "ReMe",
+  noneSelected: "未选择",
+  noneDetected: "未探测",
+  envCount: "{count} 个环境",
+  envRemeCount: "{count} 个已装 ReMe",
+  envOthers: "另有 {count} 个环境",
+  scannedAt: "探测于 {time}",
+  currentInterpreter: "当前解释器",
+  notInDetection: "不在探测结果中",
+  autoSelected: "当前使用推荐解释器；选择其他解释器后会写入配置。",
+  savingSelection: "正在保存…",
+  changeInterpreter: "更换解释器",
+  collapseList: "收起列表",
+  searchPlaceholder: "按版本、来源或路径筛选",
+  noMatch: "没有匹配的环境。",
+  showAllEnvs: "显示全部 {count} 个",
+  showFewer: "收起多余项",
+  depReady: "就绪",
+  depUpgrade: "可升级",
+  depMissing: "未安装",
+  expand: "展开",
+  collapse: "收起",
+  recommendWhyReme: "已安装可用的 reme-ai，且是独立的 conda 环境。",
+  recommendWhyRemeAny: "已安装可用的 reme-ai。",
+  recommendWhyNamed: "独立的 conda 环境，适合安装 ReMe。",
+  recommendWhyFallback: "兜底选择：第一个可用的解释器。",
 };
 
 export type EnvTranslator = (key: keyof typeof envEn) => string;
@@ -369,6 +433,85 @@ function originLabel(t: EnvTranslator, origin: PythonOrigin): string {
   }
 }
 
+interface EnvBadge {
+  tone: "" | "ok" | "bad" | "progress";
+  text: string;
+}
+
+/** Human-readable reason behind the "recommended" marker. */
+function recommendReason(t: EnvTranslator, env: PythonEnv): string {
+  const named = env.origin.kind === "conda" && env.origin.envName !== "base";
+  if (env.reme?.installed)
+    return t(named ? "recommendWhyReme" : "recommendWhyRemeAny");
+  return t(named ? "recommendWhyNamed" : "recommendWhyFallback");
+}
+
+function connectionBadge(
+  t: EnvTranslator,
+  health: HealthState,
+  current: boolean,
+): EnvBadge {
+  const label = (detail: string) => `${t("heroService")} · ${detail}`;
+  if (!current || health.phase === "loading")
+    return { tone: "", text: label(t("checking")) };
+  if (health.phase === "ok")
+    return {
+      tone: "ok",
+      text: label(health.version ? `ReMe ${health.version}` : t("connected")),
+    };
+  return { tone: "bad", text: label(t("disconnected")) };
+}
+
+function interpreterBadge(
+  t: EnvTranslator,
+  env: PythonEnv | undefined,
+  phase: DetectState["phase"],
+): EnvBadge {
+  if (!env)
+    return {
+      tone: "",
+      text: `${t("heroPython")} · ${t(
+        phase === "error" ? "noneDetected" : "noneSelected",
+      )}`,
+    };
+  return {
+    tone: env.ok ? "ok" : "progress",
+    text: `${t("heroPython")} ${env.version || "?"}`,
+  };
+}
+
+function remeSummaryBadge(
+  t: EnvTranslator,
+  check: RemeCheck | undefined,
+  checking: boolean,
+): EnvBadge {
+  if (!check)
+    return {
+      tone: "",
+      text: `${t("heroReme")} · ${t(checking ? "checking" : "noneDetected")}`,
+    };
+  if (!check.installed)
+    return {
+      tone: "progress",
+      text: `${t("heroReme")} · ${t("notInstalled")}`,
+    };
+  return {
+    tone: check.versionOk && check.hasCore ? "ok" : "progress",
+    text: `${t("heroReme")} ${check.version}`,
+  };
+}
+
+function dependencyBadge(
+  t: EnvTranslator,
+  check: RemeCheck | undefined,
+): EnvBadge {
+  if (!check) return { tone: "", text: "" };
+  if (!check.installed) return { tone: "progress", text: t("depMissing") };
+  return check.versionOk && check.hasCore
+    ? { tone: "ok", text: t("depReady") }
+    : { tone: "progress", text: t("depUpgrade") };
+}
+
 function elapsedText(job: InstallStatus, now: number): string {
   const started = Date.parse(job.startedAt);
   if (!Number.isFinite(started) || now < started) return "";
@@ -428,6 +571,10 @@ export function ReMeEnvironmentTab({
     lines: "",
     logPath: "",
   });
+  const [listOpen, setListOpen] = useState(false);
+  const [envQuery, setEnvQuery] = useState("");
+  const [showAllEnvs, setShowAllEnvs] = useState(false);
+  const [paramsOpen, setParamsOpen] = useState(false);
 
   // Derived values must precede hook dependency arrays.
   const detected = detection.phase === "ready" ? detection.data : undefined;
@@ -924,29 +1071,88 @@ export function ReMeEnvironmentTab({
     }
   };
 
+  const selectedEnv = detected?.envs.find((env) => env.exe === selectedPath);
+  const others = (detected?.envs ?? []).filter(
+    (env) => env.exe !== selectedPath,
+  );
+  const filter = envQuery.trim().toLowerCase();
+  const matches = filter
+    ? others.filter((env) =>
+        `${env.version} ${env.exe} ${originLabel(t, env.origin)} ${env.source}`
+          .toLowerCase()
+          .includes(filter),
+      )
+    : others;
+  const visibleEnvs = showAllEnvs ? matches : matches.slice(0, ENV_PAGE);
+  const hiddenCount = matches.length - visibleEnvs.length;
+  const remeCount = (detected?.envs ?? []).filter(
+    (env) => env.reme?.installed === true,
+  ).length;
+  const scannedAt = detected?.scannedAt
+    ? Date.parse(detected.scannedAt)
+    : Number.NaN;
+  const scannedTime = Number.isFinite(scannedAt)
+    ? new Date(scannedAt).toLocaleTimeString()
+    : "";
+  const ready =
+    healthCurrent &&
+    health.phase === "ok" &&
+    checkData?.installed === true &&
+    checkData.versionOk;
+  const llmModel = envValue("LLM_MODEL_NAME").trim();
+  const envSummaryLine =
+    env.phase === "ready" && env.data
+      ? `${env.data.exists ? env.data.envPath : t("envMissing")}${
+          llmModel ? ` · ${llmModel}` : ""
+        }`
+      : t("envLoading");
+  const { tone: healthTone, text: healthText } = connectionBadge(
+    t,
+    health,
+    healthCurrent,
+  );
+  const { tone: pythonTone, text: pythonText } = interpreterBadge(
+    t,
+    selectedEnv,
+    detection.phase,
+  );
+  const { tone: remeTone, text: remeText } = remeSummaryBadge(
+    t,
+    checkData,
+    checking,
+  );
+  const { tone: depTone, text: depText } = dependencyBadge(t, checkData);
+
   return (
     <div className="reme-env">
-      <section className="reme-settings-section">
-        <h4>{t("connectionTitle")}</h4>
-        <div className="reme-env-row">
-          <span className="reme-env-label">{t("endpointLabel")}</span>
-          <code className="reme-env-endpoint">{endpoint}</code>
-          {!healthCurrent ? (
-            <span className="reme-status-badge">
-              <i />
-              {t("checking")}
-            </span>
-          ) : health.phase === "ok" ? (
-            <span className="reme-status-badge ok">
-              <i />
-              {health.version ? `ReMe ${health.version}` : t("connected")}
-            </span>
-          ) : (
-            <span className="reme-status-badge bad">
-              <i />
-              {t("disconnected")}
-            </span>
-          )}
+      <section className="reme-env-hero">
+        <div className="reme-env-hero-brand">
+          <span className="reme-env-hero-mark" aria-hidden="true">
+            RE
+          </span>
+          <div className="reme-env-hero-copy">
+            <span className="reme-env-eyebrow">{t("heroEyebrow")}</span>
+            <h3>{t(ready ? "heroReady" : "heroSetup")}</h3>
+            <p className="reme-env-hero-sub" title={endpoint}>
+              {endpoint}
+            </p>
+          </div>
+        </div>
+        <div className="reme-env-hero-chips">
+          <span className={`reme-status-badge ${healthTone}`}>
+            <i />
+            {healthText}
+          </span>
+          <span className={`reme-status-badge ${pythonTone}`}>
+            <i />
+            {pythonText}
+          </span>
+          <span className={`reme-status-badge ${remeTone}`}>
+            <i />
+            {remeText}
+          </span>
+        </div>
+        <div className="reme-env-hero-actions">
           <button
             type="button"
             className="reme-settings-button"
@@ -957,697 +1163,962 @@ export function ReMeEnvironmentTab({
           >
             {t("retest")}
           </button>
+          {local ? (
+            <button
+              type="button"
+              className="reme-settings-button"
+              onClick={() => {
+                setDetection({ phase: "loading" });
+                setDetectTick((tick) => tick + 1);
+              }}
+            >
+              {t("refresh")}
+            </button>
+          ) : null}
+          {scannedTime ? (
+            <span className="reme-env-hero-meta">
+              {t("scannedAt").replace("{time}", scannedTime)}
+            </span>
+          ) : null}
         </div>
-        {healthCurrent && health.phase === "fail" && health.error ? (
-          <p className="reme-settings-error">{health.error}</p>
-        ) : null}
       </section>
+      {healthCurrent && health.phase === "fail" && health.error ? (
+        <p className="reme-settings-error reme-env-hero-error">
+          {health.error}
+        </p>
+      ) : null}
       {!local ? (
         <p className="reme-settings-muted reme-env-notice">
           {t("remoteNotice")}
         </p>
       ) : (
         <>
-          <section className="reme-settings-section">
-            <h4>{t("pythonTitle")}</h4>
-            <p className="reme-settings-muted">{t("pythonHint")}</p>
-            <div className="reme-env-row">
-              {detection.phase === "loading" ? (
-                <span className="reme-settings-muted">{t("detecting")}</span>
-              ) : null}
-              <button
-                type="button"
-                className="reme-settings-button"
-                onClick={() => {
-                  setDetection({ phase: "loading" });
-                  setDetectTick((tick) => tick + 1);
-                }}
-              >
-                {t("refresh")}
-              </button>
-            </div>
-            {detection.phase === "error" ? (
-              <p className="reme-settings-error">
-                {t("detectFailed")}
-                {detection.error ? `: ${detection.error}` : ""}
-              </p>
-            ) : null}
-            {detection.phase === "error" ||
-            (detected && detected.envs.length === 0) ? (
-              <div className="reme-env-hint">
-                <strong>{t("emptyTitle")}</strong>
-                <span>{t("emptyHint")}</span>
-                <a
-                  className="reme-settings-button"
-                  href={MINICONDA_URL}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {t("miniconda")}
-                </a>
+          <section className="reme-env-card">
+            <header>
+              <span className="reme-env-step" aria-hidden="true">
+                1
+              </span>
+              <div>
+                <h4>{t("pythonTitle")}</h4>
+                <p>{t("pythonHint")}</p>
               </div>
-            ) : null}
-            {detected && detected.envs.length > 0 ? (
-              <div className="reme-env-list">
-                {detected.envs.map((env) => (
-                  <label
-                    key={env.exe}
-                    className={`reme-env-python${
-                      selectedPath === env.exe ? " active" : ""
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="reme-python-interpreter"
-                      checked={selectedPath === env.exe}
-                      disabled={
-                        !env.ok || savingExe !== "" || !snapshot.writable
-                      }
-                      onChange={() => select(env)}
-                    />
-                    <span className="reme-env-python-main">
-                      <strong>
-                        {`Python ${env.version || "?"}`}
-                        {selectedPath !== env.exe &&
-                        env.exe === detected.suggested
-                          ? ` · ${t("recommended")}`
-                          : ""}
-                      </strong>
-                      <small>
-                        {`${originLabel(t, env.origin)} · ${env.exe}`}
-                        {env.reme?.installed
-                          ? ` · reme ${env.reme.version}`
-                          : ""}
-                      </small>
-                    </span>
-                    <span
-                      className={`reme-status-badge ${env.ok ? "ok" : "bad"}`}
-                    >
-                      <i />
-                      {env.ok ? t("okBadge") : t("tooOld")}
-                    </span>
-                  </label>
-                ))}
-              </div>
-            ) : null}
-            {detected && detected.errors.length > 0 ? (
-              <details className="reme-settings-details">
-                <summary>{t("errorsTitle")}</summary>
-                <pre>{detected.errors.join("\n")}</pre>
-              </details>
-            ) : null}
-          </section>
-          <section className="reme-settings-section">
-            <h4>{t("dependencyTitle")}</h4>
-            <p className="reme-settings-muted">{t("dependencyHint")}</p>
-            <div className="reme-env-row">
-              <span className="reme-env-label">{t("interpreterLabel")}</span>
-              <code className="reme-env-endpoint">
-                {selectedPath || t("noInterpreter")}
-              </code>
-              <button
-                type="button"
-                className="reme-settings-button"
-                disabled={!selectedPath}
-                onClick={() => {
-                  setCheck((current) => ({ ...current, phase: "idle" }));
-                  setCheckTick((tick) => tick + 1);
-                }}
-              >
-                {t("recheck")}
-              </button>
-            </div>
-            {!selectedPath ? (
-              <p className="reme-settings-muted">
-                {t("selectInterpreterFirst")}
-              </p>
-            ) : checking ? (
-              <p className="reme-settings-muted">{t("checkingReme")}</p>
-            ) : null}
-            {checkError ? (
-              <p className="reme-settings-error">
-                {t("checkRemeFailed")}
-                {checkError ? `: ${checkError}` : ""}
-              </p>
-            ) : null}
-            {checkData ? (
-              <div className="reme-env-checks">
-                <div className="reme-env-check">
-                  <span>{t("remeLabel")}</span>
-                  {checkData.installed ? (
-                    <span
-                      className={`reme-status-badge ${
-                        checkData.versionOk ? "ok" : "progress"
-                      }`}
-                    >
-                      <i />
-                      {`reme-ai ${checkData.version}`}
-                      {checkData.versionOk
-                        ? ""
-                        : ` · ${t("upgradeRecommended")}`}
-                    </span>
-                  ) : (
-                    <span className="reme-status-badge bad">
-                      <i />
-                      {t("notInstalled")}
-                    </span>
-                  )}
-                </div>
-                <div className="reme-env-check">
-                  <span>{t("coreLabel")}</span>
-                  {checkData.installed ? (
-                    <span
-                      className={`reme-status-badge ${
-                        checkData.hasCore ? "ok" : "progress"
-                      }`}
-                    >
-                      <i />
-                      {checkData.hasCore ? t("coreOk") : t("coreMissing")}
-                    </span>
-                  ) : (
-                    <span className="reme-settings-muted">—</span>
-                  )}
-                </div>
-                <div className="reme-env-check">
-                  <span>{t("cliLabel")}</span>
-                  {checkData.installed ? (
-                    <span
-                      className={`reme-status-badge ${
-                        checkData.cliPath ? "ok" : "progress"
-                      }`}
-                    >
-                      <i />
-                      {checkData.cliPath || t("cliFallback")}
-                    </span>
-                  ) : (
-                    <span className="reme-settings-muted">—</span>
-                  )}
-                </div>
-              </div>
-            ) : null}
-            {checkData && install.phase !== "running" ? (
-              <div className="reme-env-actions">
-                <label className="reme-env-mirror">
-                  <span>{t("mirrorLabel")}</span>
-                  <select
-                    value={mirror}
-                    onChange={(event) => setMirror(event.target.value)}
-                  >
-                    <option value="">{t("mirrorDefault")}</option>
-                    <option value="https://pypi.org/simple">
-                      {t("mirrorPypi")}
-                    </option>
-                    <option value="https://pypi.tuna.tsinghua.edu.cn/simple">
-                      {t("mirrorTsinghua")}
-                    </option>
-                    <option value="https://mirrors.aliyun.com/pypi/simple">
-                      {t("mirrorAliyun")}
-                    </option>
-                  </select>
-                </label>
-                {confirming ? (
-                  <div className="reme-env-confirm">
-                    <p>
-                      {t("installConfirm").replace(
-                        "{path}",
-                        selectedPath || "",
-                      )}
-                    </p>
-                    <button
-                      type="button"
-                      className="reme-settings-save"
-                      onClick={() => void startInstall(!checkData.versionOk)}
-                    >
-                      {t("confirmInstall")}
-                    </button>
-                    <button
-                      type="button"
-                      className="reme-settings-discard"
-                      onClick={() => setConfirming(false)}
-                    >
-                      {t("cancel")}
-                    </button>
-                  </div>
-                ) : checkData.installed && checkData.versionOk ? (
-                  <button
-                    type="button"
-                    className="reme-settings-button"
-                    onClick={() => setConfirming(true)}
-                  >
-                    {t("reinstall")}
-                  </button>
-                ) : checkData.installed ? (
-                  <button
-                    type="button"
-                    className="reme-settings-save"
-                    onClick={() => setConfirming(true)}
-                  >
-                    {t("upgradeButton")}
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="reme-settings-save"
-                    onClick={() => setConfirming(true)}
-                  >
-                    {t("installButton")}
-                  </button>
-                )}
-                <p className="reme-settings-muted reme-env-hint-inline">
-                  {t("condaHint")}
-                </p>
-              </div>
-            ) : null}
-            {install.phase === "running" && install.job ? (
-              <div className="reme-env-progress">
-                <div className="reme-env-row">
-                  <span className="reme-status-badge progress">
-                    <i />
-                    {t("installing")}
-                    {elapsedText(install.job, now || Date.now())
-                      ? ` · ${elapsedText(install.job, now || Date.now())}`
+              {detected && detected.envs.length > 0 ? (
+                <aside>
+                  <span className="reme-env-count">
+                    {t("envCount").replace(
+                      "{count}",
+                      String(detected.envs.length),
+                    )}
+                    {remeCount > 0
+                      ? ` · ${t("envRemeCount").replace(
+                          "{count}",
+                          String(remeCount),
+                        )}`
                       : ""}
                   </span>
-                  <button
-                    type="button"
-                    className="reme-settings-discard"
-                    onClick={() => void cancelInstall()}
+                </aside>
+              ) : null}
+            </header>
+            <div className="reme-env-card-body">
+              {detection.phase === "loading" ? (
+                <p className="reme-settings-muted">{t("detecting")}</p>
+              ) : null}
+              {detection.phase === "error" ? (
+                <p className="reme-settings-error">
+                  {t("detectFailed")}
+                  {detection.error ? `: ${detection.error}` : ""}
+                </p>
+              ) : null}
+              {detection.phase === "error" ||
+              (detected && detected.envs.length === 0) ? (
+                <div className="reme-env-hint">
+                  <strong>{t("emptyTitle")}</strong>
+                  <span>{t("emptyHint")}</span>
+                  <a
+                    className="reme-settings-button"
+                    href={MINICONDA_URL}
+                    target="_blank"
+                    rel="noreferrer"
                   >
-                    {t("cancelInstall")}
-                  </button>
+                    {t("miniconda")}
+                  </a>
                 </div>
-                <pre className="reme-env-log">
-                  {install.job.logTail || t("waitingForOutput")}
-                </pre>
+              ) : null}
+              {selectedEnv ? (
+                <div className="reme-env-picked">
+                  <span className="reme-env-picked-mark" aria-hidden="true" />
+                  <span className="reme-env-picked-main">
+                    <span className="reme-env-title">
+                      <strong>{`Python ${selectedEnv.version || "?"}`}</strong>
+                      <span className="reme-env-tag">
+                        {originLabel(t, selectedEnv.origin)}
+                      </span>
+                      {selectedEnv.reme?.installed ? (
+                        <span
+                          className={`reme-env-tag ${
+                            selectedEnv.reme.versionOk === false ? "warn" : "ok"
+                          }`}
+                          title={
+                            selectedEnv.reme.versionOk === false
+                              ? t("upgradeRecommended")
+                              : undefined
+                          }
+                        >{`ReMe ${selectedEnv.reme.version}`}</span>
+                      ) : null}
+                      {selectedEnv.exe === detected?.suggested ? (
+                        <span
+                          className="reme-env-tag brand"
+                          title={recommendReason(t, selectedEnv)}
+                        >
+                          {t("recommended")}
+                        </span>
+                      ) : null}
+                      {!selectedEnv.ok ? (
+                        <span className="reme-env-tag bad">{t("tooOld")}</span>
+                      ) : null}
+                    </span>
+                    <code className="reme-env-path" title={selectedEnv.exe}>
+                      {selectedEnv.exe}
+                    </code>
+                  </span>
+                  {savingExe === selectedEnv.exe ? (
+                    <span className="reme-settings-muted">
+                      {t("savingSelection")}
+                    </span>
+                  ) : null}
+                </div>
+              ) : selectedExe ? (
+                <div className="reme-env-picked">
+                  <span className="reme-env-picked-mark" aria-hidden="true" />
+                  <span className="reme-env-picked-main">
+                    <span className="reme-env-title">
+                      <strong>{t("currentInterpreter")}</strong>
+                      <span className="reme-env-tag bad">
+                        {t("notInDetection")}
+                      </span>
+                    </span>
+                    <code className="reme-env-path" title={selectedExe}>
+                      {selectedExe}
+                    </code>
+                  </span>
+                </div>
+              ) : null}
+              {!selectedExe && suggestedExe ? (
+                <p className="reme-settings-muted reme-env-note">
+                  {t("autoSelected")}
+                </p>
+              ) : null}
+              {others.length > 0 ? (
+                <div className="reme-env-picker">
+                  <div className="reme-env-picker-bar">
+                    <button
+                      type="button"
+                      className="reme-settings-button"
+                      onClick={() => setListOpen((open) => !open)}
+                    >
+                      {t(listOpen ? "collapseList" : "changeInterpreter")}
+                    </button>
+                    {listOpen ? (
+                      <input
+                        className="reme-env-search"
+                        value={envQuery}
+                        placeholder={t("searchPlaceholder")}
+                        onChange={(event) => {
+                          setEnvQuery(event.target.value);
+                          setShowAllEnvs(false);
+                        }}
+                      />
+                    ) : (
+                      <span className="reme-settings-muted">
+                        {t("envOthers").replace(
+                          "{count}",
+                          String(others.length),
+                        )}
+                      </span>
+                    )}
+                  </div>
+                  {listOpen ? (
+                    <>
+                      {visibleEnvs.length > 0 ? (
+                        <div
+                          className="reme-env-options"
+                          role="radiogroup"
+                          aria-label={t("pythonTitle")}
+                        >
+                          {visibleEnvs.map((env) => (
+                            <label key={env.exe} className="reme-env-option">
+                              <input
+                                type="radio"
+                                name="reme-python-interpreter"
+                                checked={false}
+                                disabled={
+                                  !env.ok ||
+                                  savingExe !== "" ||
+                                  !snapshot.writable
+                                }
+                                onChange={() => {
+                                  select(env);
+                                  setListOpen(false);
+                                }}
+                              />
+                              <strong>{`Python ${env.version || "?"}`}</strong>
+                              <em>{originLabel(t, env.origin)}</em>
+                              {env.reme?.installed ? (
+                                <span
+                                  className={`reme-env-tag ${
+                                    env.reme.versionOk === false ? "warn" : "ok"
+                                  }`}
+                                  title={
+                                    env.reme.versionOk === false
+                                      ? t("upgradeRecommended")
+                                      : undefined
+                                  }
+                                >{`ReMe ${env.reme.version}`}</span>
+                              ) : null}
+                              {env.exe === detected?.suggested ? (
+                                <span
+                                  className="reme-env-tag brand"
+                                  title={recommendReason(t, env)}
+                                >
+                                  {t("recommended")}
+                                </span>
+                              ) : null}
+                              {!env.ok ? (
+                                <span className="reme-env-tag bad">
+                                  {t("tooOld")}
+                                </span>
+                              ) : null}
+                              <code
+                                className="reme-env-option-path"
+                                title={env.exe}
+                              >
+                                {env.exe}
+                              </code>
+                            </label>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="reme-settings-muted">{t("noMatch")}</p>
+                      )}
+                      {hiddenCount > 0 ? (
+                        <button
+                          type="button"
+                          className="reme-settings-reset reme-env-more"
+                          onClick={() => setShowAllEnvs(true)}
+                        >
+                          {t("showAllEnvs").replace(
+                            "{count}",
+                            String(matches.length),
+                          )}
+                        </button>
+                      ) : matches.length > ENV_PAGE ? (
+                        <button
+                          type="button"
+                          className="reme-settings-reset reme-env-more"
+                          onClick={() => setShowAllEnvs(false)}
+                        >
+                          {t("showFewer")}
+                        </button>
+                      ) : null}
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
+              {detected && detected.errors.length > 0 ? (
+                <details className="reme-settings-details">
+                  <summary>{t("errorsTitle")}</summary>
+                  <pre>{detected.errors.join("\n")}</pre>
+                </details>
+              ) : null}
+            </div>
+          </section>
+          <section className="reme-env-card">
+            <header>
+              <span className="reme-env-step" aria-hidden="true">
+                2
+              </span>
+              <div>
+                <h4>{t("dependencyTitle")}</h4>
+                <p>{t("dependencyHint")}</p>
               </div>
-            ) : null}
-            {install.phase === "done" ? (
-              <div className="reme-env-result">
-                {install.job?.phase === "succeeded" ? (
-                  <p className="reme-settings-success">
-                    {t("installSucceeded")}
-                  </p>
-                ) : null}
-                {install.job?.phase === "cancelled" ? (
-                  <p className="reme-settings-muted">{t("installCancelled")}</p>
-                ) : null}
-                {install.job?.phase === "failed" ? (
-                  <>
-                    <p className="reme-settings-error">{t("installFailed")}</p>
-                    {install.job.logTail ? (
-                      <pre className="reme-env-log">{install.job.logTail}</pre>
-                    ) : null}
-                    <p className="reme-settings-muted">{install.job.logPath}</p>
-                  </>
-                ) : null}
-                {install.error ? (
-                  <p className="reme-settings-error">{install.error}</p>
-                ) : null}
+              {depTone ? (
+                <aside>
+                  <span className={`reme-status-badge ${depTone}`}>
+                    <i />
+                    {depText}
+                  </span>
+                </aside>
+              ) : null}
+            </header>
+            <div className="reme-env-card-body">
+              <div className="reme-env-factrow">
+                <span className="reme-env-field-label">
+                  {t("interpreterLabel")}
+                </span>
+                <code className="reme-env-path" title={selectedPath}>
+                  {selectedPath || t("noInterpreter")}
+                </code>
                 <button
                   type="button"
                   className="reme-settings-button"
+                  disabled={!selectedPath}
                   onClick={() => {
-                    setInstall({ phase: "idle" });
-                    setConfirming(false);
+                    setCheck((current) => ({ ...current, phase: "idle" }));
+                    setCheckTick((tick) => tick + 1);
                   }}
                 >
-                  {t("dismiss")}
+                  {t("recheck")}
                 </button>
               </div>
-            ) : null}
-          </section>
-          <section className="reme-settings-section">
-            <h4>{t("configTitle")}</h4>
-            <p className="reme-settings-muted">{t("configHint")}</p>
-            <div className="reme-settings-grid">
-              <EnvField label={t("workspaceDir")} hint={t("workspaceDirHint")}>
-                <div className="reme-env-inline">
-                  <input
-                    value={workspaceDraft}
-                    placeholder="~/.reme"
-                    onChange={(event) => setWorkspaceInput(event.target.value)}
-                  />
-                  <button
-                    type="button"
-                    className="reme-settings-button"
-                    disabled={!snapshot.writable || envSaving}
-                    onClick={() => void saveWorkspace()}
-                  >
-                    {t("saveWorkspace")}
-                  </button>
-                </div>
-              </EnvField>
-            </div>
-            {env.phase === "loading" ? (
-              <p className="reme-settings-muted">{t("envLoading")}</p>
-            ) : null}
-            {env.phase === "error" ? (
-              <p className="reme-settings-error">
-                {t("saveEnvFailed")}
-                {env.error ? `: ${env.error}` : ""}
-              </p>
-            ) : null}
-            {env.phase === "ready" && env.data ? (
-              <>
+              {!selectedPath ? (
                 <p className="reme-settings-muted">
-                  {env.data.exists
-                    ? `${t("envPath")}: ${env.data.envPath}`
-                    : t("envMissing")}
+                  {t("selectInterpreterFirst")}
                 </p>
-                <div className="reme-settings-grid reme-env-config">
-                  <h5 className="reme-env-group">{t("llmGroup")}</h5>
-                  <EnvField label={t("backendLabel")}>
-                    <select
-                      value={envValue("LLM_BACKEND")}
-                      onChange={(event) =>
-                        updateEnvDraft("LLM_BACKEND", event.target.value)
-                      }
-                    >
-                      <option value="">—</option>
-                      {envOptions(LLM_BACKENDS, envValue("LLM_BACKEND")).map(
-                        (name) => (
-                          <option key={name} value={name}>
-                            {name}
-                          </option>
-                        ),
+              ) : checking ? (
+                <p className="reme-settings-muted">{t("checkingReme")}</p>
+              ) : null}
+              {checkError ? (
+                <p className="reme-settings-error">
+                  {t("checkRemeFailed")}
+                  {checkError ? `: ${checkError}` : ""}
+                </p>
+              ) : null}
+              {checkData ? (
+                <div className="reme-env-metrics">
+                  <div className="reme-env-metric">
+                    <span>{t("remeLabel")}</span>
+                    <div>
+                      {checkData.installed ? (
+                        <>
+                          <span
+                            className={`reme-status-badge ${
+                              checkData.versionOk ? "ok" : "progress"
+                            }`}
+                          >
+                            <i />
+                            {`reme-ai ${checkData.version}`}
+                          </span>
+                          {checkData.versionOk ? null : (
+                            <small>{t("upgradeRecommended")}</small>
+                          )}
+                        </>
+                      ) : (
+                        <span className="reme-status-badge bad">
+                          <i />
+                          {t("notInstalled")}
+                        </span>
                       )}
-                    </select>
-                  </EnvField>
-                  <EnvField label={t("modelLabel")}>
-                    <input
-                      value={envValue("LLM_MODEL_NAME")}
-                      placeholder="qwen3.7-plus"
-                      onChange={(event) =>
-                        updateEnvDraft("LLM_MODEL_NAME", event.target.value)
-                      }
-                    />
-                  </EnvField>
-                  <EnvField
-                    label={t("apiKeyLabel")}
-                    hint={
-                      envEntry("LLM_API_KEY")?.set
-                        ? t("secretSet").replace(
-                            "{masked}",
-                            envEntry("LLM_API_KEY")?.masked ?? "",
-                          )
-                        : t("secretUnset")
-                    }
-                  >
-                    <input
-                      type="password"
-                      autoComplete="off"
-                      value={envDraft["LLM_API_KEY"] ?? ""}
-                      placeholder={envEntry("LLM_API_KEY")?.masked ?? ""}
-                      onChange={(event) =>
-                        updateEnvDraft("LLM_API_KEY", event.target.value)
-                      }
-                    />
-                  </EnvField>
-                  <EnvField label={t("baseUrlLabel")}>
-                    <input
-                      value={envValue("LLM_BASE_URL")}
-                      placeholder="https://…/v1"
-                      onChange={(event) =>
-                        updateEnvDraft("LLM_BASE_URL", event.target.value)
-                      }
-                    />
-                  </EnvField>
-                  <h5 className="reme-env-group">{t("embeddingGroup")}</h5>
-                  <EnvField label={t("backendLabel")}>
-                    <select
-                      value={envValue("EMBEDDING_BACKEND")}
-                      onChange={(event) =>
-                        updateEnvDraft("EMBEDDING_BACKEND", event.target.value)
-                      }
-                    >
-                      <option value="">—</option>
-                      {envOptions(
-                        EMBEDDING_BACKENDS,
-                        envValue("EMBEDDING_BACKEND"),
-                      ).map((name) => (
-                        <option key={name} value={name}>
-                          {name}
-                        </option>
-                      ))}
-                    </select>
-                  </EnvField>
-                  <EnvField label={t("modelLabel")}>
-                    <input
-                      value={envValue("EMBEDDING_MODEL_NAME")}
-                      placeholder="text-embedding-v4"
-                      onChange={(event) =>
-                        updateEnvDraft(
-                          "EMBEDDING_MODEL_NAME",
-                          event.target.value,
+                    </div>
+                  </div>
+                  <div className="reme-env-metric">
+                    <span>{t("coreLabel")}</span>
+                    <div>
+                      {checkData.installed ? (
+                        <span
+                          className={`reme-status-badge ${
+                            checkData.hasCore ? "ok" : "progress"
+                          }`}
+                        >
+                          <i />
+                          {checkData.hasCore ? t("coreOk") : t("coreMissing")}
+                        </span>
+                      ) : (
+                        <span className="reme-settings-muted">—</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="reme-env-metric">
+                    <span>{t("cliLabel")}</span>
+                    <div>
+                      {checkData.installed ? (
+                        checkData.cliPath ? (
+                          <code
+                            className="reme-env-metric-path"
+                            title={checkData.cliPath}
+                          >
+                            {checkData.cliPath}
+                          </code>
+                        ) : (
+                          <span className="reme-status-badge progress">
+                            <i />
+                            {t("cliFallback")}
+                          </span>
                         )
-                      }
-                    />
-                  </EnvField>
-                  <EnvField
-                    label={t("apiKeyLabel")}
-                    hint={
-                      envEntry("EMBEDDING_API_KEY")?.set
-                        ? t("secretSet").replace(
-                            "{masked}",
-                            envEntry("EMBEDDING_API_KEY")?.masked ?? "",
-                          )
-                        : t("secretUnset")
-                    }
-                  >
-                    <input
-                      type="password"
-                      autoComplete="off"
-                      value={envDraft["EMBEDDING_API_KEY"] ?? ""}
-                      placeholder={
-                        envEntry("EMBEDDING_API_KEY")?.masked ?? "EMPTY"
-                      }
-                      onChange={(event) =>
-                        updateEnvDraft("EMBEDDING_API_KEY", event.target.value)
-                      }
-                    />
-                  </EnvField>
-                  <EnvField label={t("baseUrlLabel")} hint={t("embeddingHint")}>
-                    <input
-                      value={envValue("EMBEDDING_BASE_URL")}
-                      placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
-                      onChange={(event) =>
-                        updateEnvDraft("EMBEDDING_BASE_URL", event.target.value)
-                      }
-                    />
-                  </EnvField>
+                      ) : (
+                        <span className="reme-settings-muted">—</span>
+                      )}
+                    </div>
+                  </div>
                 </div>
-                <div className="reme-env-actions">
-                  <button
-                    type="button"
-                    className="reme-settings-save"
-                    disabled={envSaving || !snapshot.writable}
-                    onClick={() => void saveEnv()}
-                  >
-                    {t(envSaving ? "savingEnv" : "saveEnv")}
-                  </button>
-                  <button
-                    type="button"
-                    className="reme-settings-button"
-                    disabled={!selectedPath || llmTest.phase === "running"}
-                    onClick={() => void runLlmTest()}
-                  >
-                    {t(
-                      llmTest.phase === "running"
-                        ? "testingLlm"
-                        : "testLlmButton",
-                    )}
-                  </button>
-                  <span className="reme-settings-result" role="status">
-                    {envResult.kind === "saved" ? (
-                      <span className="reme-settings-success">
-                        {t("savedEnv").replace(
+              ) : null}
+              {checkData && install.phase !== "running" ? (
+                <div className="reme-env-cta">
+                  <label className="reme-env-mirror">
+                    <span>{t("mirrorLabel")}</span>
+                    <select
+                      value={mirror}
+                      onChange={(event) => setMirror(event.target.value)}
+                    >
+                      <option value="">{t("mirrorDefault")}</option>
+                      <option value="https://pypi.org/simple">
+                        {t("mirrorPypi")}
+                      </option>
+                      <option value="https://pypi.tuna.tsinghua.edu.cn/simple">
+                        {t("mirrorTsinghua")}
+                      </option>
+                      <option value="https://mirrors.aliyun.com/pypi/simple">
+                        {t("mirrorAliyun")}
+                      </option>
+                    </select>
+                  </label>
+                  {confirming ? (
+                    <div className="reme-env-confirm">
+                      <p>
+                        {t("installConfirm").replace(
                           "{path}",
-                          env.data?.envPath ?? "",
+                          selectedPath || "",
                         )}
-                      </span>
-                    ) : null}
-                    {envResult.kind === "failed" ? (
-                      <span className="reme-settings-error">
-                        {`${t("saveEnvFailed")}${
-                          envResult.message ? `: ${envResult.message}` : ""
-                        }`}
-                      </span>
-                    ) : null}
-                    {llmTest.phase === "ok" && llmTest.result ? (
-                      <span className="reme-settings-success">
-                        {t("llmOk").replace(
-                          "{ms}",
-                          String(llmTest.result.latencyMs),
-                        )}
-                      </span>
-                    ) : null}
-                    {llmTest.phase === "fail" && llmTest.result ? (
-                      <span className="reme-settings-error">
-                        {`${t("llmFailed")}${
-                          llmTest.result.error
-                            ? `: ${llmTest.result.error}`
-                            : ""
-                        }`}
-                      </span>
-                    ) : null}
-                  </span>
-                </div>
-              </>
-            ) : null}
-          </section>
-          <section className="reme-settings-section">
-            <h4>{t("controlTitle")}</h4>
-            <p className="reme-settings-muted">{t("serviceHint")}</p>
-            <div className="reme-env-row">
-              <span className="reme-env-label">{t("endpointLabel")}</span>
-              <code className="reme-env-endpoint">{endpoint}</code>
-              {service.phase === "checking" || service.phase === "starting" ? (
-                <span className="reme-status-badge progress">
-                  <i />
-                  {t(
-                    service.phase === "starting"
-                      ? "serviceBadgeStarting"
-                      : "checking",
-                  )}
-                </span>
-              ) : service.phase === "running" ? (
-                <span className="reme-status-badge ok">
-                  <i />
-                  {service.data?.version
-                    ? `ReMe ${service.data.version}`
-                    : t("serviceRunning")}
-                </span>
-              ) : service.phase === "conflict" ? (
-                <span className="reme-status-badge progress">
-                  <i />
-                  {t("serviceBadgeConflict")}
-                </span>
-              ) : (
-                <span className="reme-status-badge bad">
-                  <i />
-                  {t("serviceBadgeStopped")}
-                </span>
-              )}
-              <button
-                type="button"
-                className="reme-settings-button"
-                onClick={() => setServiceTick((tick) => tick + 1)}
-              >
-                {t("recheck")}
-              </button>
-            </div>
-            {service.phase === "running" ? (
-              <p className="reme-settings-muted">
-                {service.data?.managed
-                  ? t("managedNote").replace(
-                      "{pid}",
-                      String(service.data?.pid ?? ""),
-                    )
-                  : t("foreignNote")}
-              </p>
-            ) : null}
-            {service.phase === "conflict" ? (
-              <p className="reme-settings-muted">{t("conflictNote")}</p>
-            ) : null}
-            {service.phase === "error" && service.error ? (
-              <p className="reme-settings-error">
-                {`${t("serviceError")}: ${service.error}`}
-              </p>
-            ) : null}
-            <div className="reme-env-actions">
-              {service.phase === "running" ? (
-                confirmingStop ? (
-                  <div className="reme-env-confirm">
-                    <p>{t("stopConfirm")}</p>
+                      </p>
+                      <button
+                        type="button"
+                        className="reme-settings-save"
+                        onClick={() => void startInstall(!checkData.versionOk)}
+                      >
+                        {t("confirmInstall")}
+                      </button>
+                      <button
+                        type="button"
+                        className="reme-settings-discard"
+                        onClick={() => setConfirming(false)}
+                      >
+                        {t("cancel")}
+                      </button>
+                    </div>
+                  ) : checkData.installed && checkData.versionOk ? (
+                    <button
+                      type="button"
+                      className="reme-settings-button"
+                      onClick={() => setConfirming(true)}
+                    >
+                      {t("reinstall")}
+                    </button>
+                  ) : checkData.installed ? (
                     <button
                       type="button"
                       className="reme-settings-save"
-                      disabled={stopping}
-                      onClick={() => void stopService()}
+                      onClick={() => setConfirming(true)}
+                    >
+                      {t("upgradeButton")}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="reme-settings-save"
+                      onClick={() => setConfirming(true)}
+                    >
+                      {t("installButton")}
+                    </button>
+                  )}
+                  <p className="reme-settings-muted reme-env-hint-inline">
+                    {t("condaHint")}
+                  </p>
+                </div>
+              ) : null}
+              {install.phase === "running" && install.job ? (
+                <div className="reme-env-progress">
+                  <div className="reme-env-row">
+                    <span className="reme-status-badge progress">
+                      <i />
+                      {t("installing")}
+                      {elapsedText(install.job, now || Date.now())
+                        ? ` · ${elapsedText(install.job, now || Date.now())}`
+                        : ""}
+                    </span>
+                    <button
+                      type="button"
+                      className="reme-settings-discard"
+                      onClick={() => void cancelInstall()}
+                    >
+                      {t("cancelInstall")}
+                    </button>
+                  </div>
+                  <pre className="reme-env-log">
+                    {install.job.logTail || t("waitingForOutput")}
+                  </pre>
+                </div>
+              ) : null}
+              {install.phase === "done" ? (
+                <div className="reme-env-result">
+                  {install.job?.phase === "succeeded" ? (
+                    <p className="reme-settings-success">
+                      {t("installSucceeded")}
+                    </p>
+                  ) : null}
+                  {install.job?.phase === "cancelled" ? (
+                    <p className="reme-settings-muted">
+                      {t("installCancelled")}
+                    </p>
+                  ) : null}
+                  {install.job?.phase === "failed" ? (
+                    <>
+                      <p className="reme-settings-error">
+                        {t("installFailed")}
+                      </p>
+                      {install.job.logTail ? (
+                        <pre className="reme-env-log">
+                          {install.job.logTail}
+                        </pre>
+                      ) : null}
+                      <p className="reme-settings-muted">
+                        {install.job.logPath}
+                      </p>
+                    </>
+                  ) : null}
+                  {install.error ? (
+                    <p className="reme-settings-error">{install.error}</p>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="reme-settings-button"
+                    onClick={() => {
+                      setInstall({ phase: "idle" });
+                      setConfirming(false);
+                    }}
+                  >
+                    {t("dismiss")}
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </section>
+          <section className={`reme-env-card${paramsOpen ? "" : " collapsed"}`}>
+            <header>
+              <span className="reme-env-step" aria-hidden="true">
+                3
+              </span>
+              <div>
+                <h4>{t("configTitle")}</h4>
+                <p className="reme-env-summary">{envSummaryLine}</p>
+              </div>
+              <aside>
+                <button
+                  type="button"
+                  className="reme-settings-button"
+                  aria-expanded={paramsOpen}
+                  onClick={() => setParamsOpen((open) => !open)}
+                >
+                  {t(paramsOpen ? "collapse" : "expand")}
+                </button>
+              </aside>
+            </header>
+            {paramsOpen ? (
+              <div className="reme-env-card-body">
+                <p className="reme-settings-muted">{t("configHint")}</p>
+                <div className="reme-settings-grid">
+                  <EnvField
+                    label={t("workspaceDir")}
+                    hint={t("workspaceDirHint")}
+                  >
+                    <div className="reme-env-inline">
+                      <input
+                        value={workspaceDraft}
+                        placeholder="~/.reme"
+                        onChange={(event) =>
+                          setWorkspaceInput(event.target.value)
+                        }
+                      />
+                      <button
+                        type="button"
+                        className="reme-settings-button"
+                        disabled={!snapshot.writable || envSaving}
+                        onClick={() => void saveWorkspace()}
+                      >
+                        {t("saveWorkspace")}
+                      </button>
+                    </div>
+                  </EnvField>
+                </div>
+                {env.phase === "loading" ? (
+                  <p className="reme-settings-muted">{t("envLoading")}</p>
+                ) : null}
+                {env.phase === "error" ? (
+                  <p className="reme-settings-error">
+                    {t("saveEnvFailed")}
+                    {env.error ? `: ${env.error}` : ""}
+                  </p>
+                ) : null}
+                {env.phase === "ready" && env.data ? (
+                  <>
+                    <p className="reme-settings-muted">
+                      {env.data.exists
+                        ? `${t("envPath")}: ${env.data.envPath}`
+                        : t("envMissing")}
+                    </p>
+                    <div className="reme-settings-grid reme-env-config">
+                      <h5 className="reme-env-group">{t("llmGroup")}</h5>
+                      <EnvField label={t("backendLabel")}>
+                        <select
+                          value={envValue("LLM_BACKEND")}
+                          onChange={(event) =>
+                            updateEnvDraft("LLM_BACKEND", event.target.value)
+                          }
+                        >
+                          <option value="">—</option>
+                          {envOptions(
+                            LLM_BACKENDS,
+                            envValue("LLM_BACKEND"),
+                          ).map((name) => (
+                            <option key={name} value={name}>
+                              {name}
+                            </option>
+                          ))}
+                        </select>
+                      </EnvField>
+                      <EnvField label={t("modelLabel")}>
+                        <input
+                          value={envValue("LLM_MODEL_NAME")}
+                          placeholder="qwen3.7-plus"
+                          onChange={(event) =>
+                            updateEnvDraft("LLM_MODEL_NAME", event.target.value)
+                          }
+                        />
+                      </EnvField>
+                      <EnvField
+                        label={t("apiKeyLabel")}
+                        hint={
+                          envEntry("LLM_API_KEY")?.set
+                            ? t("secretSet").replace(
+                                "{masked}",
+                                envEntry("LLM_API_KEY")?.masked ?? "",
+                              )
+                            : t("secretUnset")
+                        }
+                      >
+                        <input
+                          type="password"
+                          autoComplete="off"
+                          value={envDraft["LLM_API_KEY"] ?? ""}
+                          placeholder={envEntry("LLM_API_KEY")?.masked ?? ""}
+                          onChange={(event) =>
+                            updateEnvDraft("LLM_API_KEY", event.target.value)
+                          }
+                        />
+                      </EnvField>
+                      <EnvField label={t("baseUrlLabel")}>
+                        <input
+                          value={envValue("LLM_BASE_URL")}
+                          placeholder="https://…/v1"
+                          onChange={(event) =>
+                            updateEnvDraft("LLM_BASE_URL", event.target.value)
+                          }
+                        />
+                      </EnvField>
+                      <h5 className="reme-env-group">{t("embeddingGroup")}</h5>
+                      <EnvField label={t("backendLabel")}>
+                        <select
+                          value={envValue("EMBEDDING_BACKEND")}
+                          onChange={(event) =>
+                            updateEnvDraft(
+                              "EMBEDDING_BACKEND",
+                              event.target.value,
+                            )
+                          }
+                        >
+                          <option value="">—</option>
+                          {envOptions(
+                            EMBEDDING_BACKENDS,
+                            envValue("EMBEDDING_BACKEND"),
+                          ).map((name) => (
+                            <option key={name} value={name}>
+                              {name}
+                            </option>
+                          ))}
+                        </select>
+                      </EnvField>
+                      <EnvField label={t("modelLabel")}>
+                        <input
+                          value={envValue("EMBEDDING_MODEL_NAME")}
+                          placeholder="text-embedding-v4"
+                          onChange={(event) =>
+                            updateEnvDraft(
+                              "EMBEDDING_MODEL_NAME",
+                              event.target.value,
+                            )
+                          }
+                        />
+                      </EnvField>
+                      <EnvField
+                        label={t("apiKeyLabel")}
+                        hint={
+                          envEntry("EMBEDDING_API_KEY")?.set
+                            ? t("secretSet").replace(
+                                "{masked}",
+                                envEntry("EMBEDDING_API_KEY")?.masked ?? "",
+                              )
+                            : t("secretUnset")
+                        }
+                      >
+                        <input
+                          type="password"
+                          autoComplete="off"
+                          value={envDraft["EMBEDDING_API_KEY"] ?? ""}
+                          placeholder={
+                            envEntry("EMBEDDING_API_KEY")?.masked ?? "EMPTY"
+                          }
+                          onChange={(event) =>
+                            updateEnvDraft(
+                              "EMBEDDING_API_KEY",
+                              event.target.value,
+                            )
+                          }
+                        />
+                      </EnvField>
+                      <EnvField
+                        label={t("baseUrlLabel")}
+                        hint={t("embeddingHint")}
+                      >
+                        <input
+                          value={envValue("EMBEDDING_BASE_URL")}
+                          placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+                          onChange={(event) =>
+                            updateEnvDraft(
+                              "EMBEDDING_BASE_URL",
+                              event.target.value,
+                            )
+                          }
+                        />
+                      </EnvField>
+                    </div>
+                    <div className="reme-env-actions">
+                      <button
+                        type="button"
+                        className="reme-settings-save"
+                        disabled={envSaving || !snapshot.writable}
+                        onClick={() => void saveEnv()}
+                      >
+                        {t(envSaving ? "savingEnv" : "saveEnv")}
+                      </button>
+                      <button
+                        type="button"
+                        className="reme-settings-button"
+                        disabled={!selectedPath || llmTest.phase === "running"}
+                        onClick={() => void runLlmTest()}
+                      >
+                        {t(
+                          llmTest.phase === "running"
+                            ? "testingLlm"
+                            : "testLlmButton",
+                        )}
+                      </button>
+                      <span className="reme-settings-result" role="status">
+                        {envResult.kind === "saved" ? (
+                          <span className="reme-settings-success">
+                            {t("savedEnv").replace(
+                              "{path}",
+                              env.data?.envPath ?? "",
+                            )}
+                          </span>
+                        ) : null}
+                        {envResult.kind === "failed" ? (
+                          <span className="reme-settings-error">
+                            {`${t("saveEnvFailed")}${
+                              envResult.message ? `: ${envResult.message}` : ""
+                            }`}
+                          </span>
+                        ) : null}
+                        {llmTest.phase === "ok" && llmTest.result ? (
+                          <span className="reme-settings-success">
+                            {t("llmOk").replace(
+                              "{ms}",
+                              String(llmTest.result.latencyMs),
+                            )}
+                          </span>
+                        ) : null}
+                        {llmTest.phase === "fail" && llmTest.result ? (
+                          <span className="reme-settings-error">
+                            {`${t("llmFailed")}${
+                              llmTest.result.error
+                                ? `: ${llmTest.result.error}`
+                                : ""
+                            }`}
+                          </span>
+                        ) : null}
+                      </span>
+                    </div>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+          <section className="reme-env-card">
+            <header>
+              <span className="reme-env-step" aria-hidden="true">
+                4
+              </span>
+              <div>
+                <h4>{t("controlTitle")}</h4>
+                <p>{t("serviceHint")}</p>
+              </div>
+              <aside>
+                {service.phase === "checking" ||
+                service.phase === "starting" ? (
+                  <span className="reme-status-badge progress">
+                    <i />
+                    {t(
+                      service.phase === "starting"
+                        ? "serviceBadgeStarting"
+                        : "checking",
+                    )}
+                  </span>
+                ) : service.phase === "running" ? (
+                  <span className="reme-status-badge ok">
+                    <i />
+                    {service.data?.version
+                      ? `ReMe ${service.data.version}`
+                      : t("serviceRunning")}
+                  </span>
+                ) : service.phase === "conflict" ? (
+                  <span className="reme-status-badge progress">
+                    <i />
+                    {t("serviceBadgeConflict")}
+                  </span>
+                ) : (
+                  <span className="reme-status-badge bad">
+                    <i />
+                    {t("serviceBadgeStopped")}
+                  </span>
+                )}
+              </aside>
+            </header>
+            <div className="reme-env-card-body">
+              <div className="reme-env-factrow">
+                <span className="reme-env-field-label">
+                  {t("endpointLabel")}
+                </span>
+                <code className="reme-env-path" title={endpoint}>
+                  {endpoint}
+                </code>
+                <button
+                  type="button"
+                  className="reme-settings-button"
+                  onClick={() => setServiceTick((tick) => tick + 1)}
+                >
+                  {t("recheck")}
+                </button>
+              </div>
+              {service.phase === "running" ? (
+                <p className="reme-settings-muted">
+                  {service.data?.managed
+                    ? t("managedNote").replace(
+                        "{pid}",
+                        String(service.data?.pid ?? ""),
+                      )
+                    : t("foreignNote")}
+                </p>
+              ) : null}
+              {service.phase === "conflict" ? (
+                <p className="reme-settings-muted">{t("conflictNote")}</p>
+              ) : null}
+              {service.phase === "error" && service.error ? (
+                <p className="reme-settings-error">
+                  {`${t("serviceError")}: ${service.error}`}
+                </p>
+              ) : null}
+              <div className="reme-env-cta">
+                {service.phase === "running" ? (
+                  confirmingStop ? (
+                    <div className="reme-env-confirm">
+                      <p>{t("stopConfirm")}</p>
+                      <button
+                        type="button"
+                        className="reme-settings-save"
+                        disabled={stopping}
+                        onClick={() => void stopService()}
+                      >
+                        {t("stopService")}
+                      </button>
+                      <button
+                        type="button"
+                        className="reme-settings-discard"
+                        onClick={() => setConfirmingStop(false)}
+                      >
+                        {t("cancel")}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="reme-settings-button"
+                      disabled={stopping || !service.data?.managed}
+                      onClick={() => setConfirmingStop(true)}
                     >
                       {t("stopService")}
                     </button>
-                    <button
-                      type="button"
-                      className="reme-settings-discard"
-                      onClick={() => setConfirmingStop(false)}
-                    >
-                      {t("cancel")}
-                    </button>
-                  </div>
+                  )
                 ) : (
                   <button
                     type="button"
-                    className="reme-settings-button"
-                    disabled={stopping || !service.data?.managed}
-                    onClick={() => setConfirmingStop(true)}
+                    className="reme-settings-save"
+                    disabled={
+                      service.phase === "starting" ||
+                      !checkData?.installed ||
+                      !selectedPath
+                    }
+                    onClick={() => void startService()}
                   >
-                    {t("stopService")}
+                    {t("startService")}
                   </button>
-                )
-              ) : (
-                <button
-                  type="button"
-                  className="reme-settings-save"
-                  disabled={
-                    service.phase === "starting" ||
-                    !checkData?.installed ||
-                    !selectedPath
-                  }
-                  onClick={() => void startService()}
-                >
-                  {t("startService")}
-                </button>
-              )}
-              <button
-                type="button"
-                className="reme-settings-button"
-                onClick={() => void viewLog()}
-              >
-                {t("viewLogs")}
-              </button>
-              <label className="reme-settings-check reme-env-check-inline">
-                <input
-                  type="checkbox"
-                  checked={value?.autoStart === true}
-                  onChange={(event) => {
-                    if (!value || !snapshot.writable) return;
-                    void scope
-                      .mutate(
-                        [
-                          {
-                            op: "set",
-                            path: ["autoStart"],
-                            value: event.target.checked,
-                          },
-                        ],
-                        snapshot.revision,
-                      )
-                      .catch(() => undefined);
-                  }}
-                />
-                <span>{t("autoStartLabel")}</span>
-              </label>
-            </div>
-            {logView.open ? (
-              <div className="reme-env-result">
-                <p className="reme-settings-muted">
-                  {`${t("envPath")}: ${logView.logPath}`}
-                </p>
-                <pre className="reme-env-log">
-                  {logView.lines || t("logEmpty")}
-                </pre>
+                )}
                 <button
                   type="button"
                   className="reme-settings-button"
-                  onClick={() =>
-                    setLogView({ open: false, lines: "", logPath: "" })
-                  }
+                  onClick={() => void viewLog()}
                 >
-                  {t("dismiss")}
+                  {t("viewLogs")}
                 </button>
+                <label className="reme-settings-check reme-env-autostart">
+                  <input
+                    type="checkbox"
+                    checked={value?.autoStart === true}
+                    onChange={(event) => {
+                      if (!value || !snapshot.writable) return;
+                      void scope
+                        .mutate(
+                          [
+                            {
+                              op: "set",
+                              path: ["autoStart"],
+                              value: event.target.checked,
+                            },
+                          ],
+                          snapshot.revision,
+                        )
+                        .catch(() => undefined);
+                    }}
+                  />
+                  <span>{t("autoStartLabel")}</span>
+                </label>
               </div>
-            ) : null}
+              {logView.open ? (
+                <div className="reme-env-result">
+                  <p className="reme-settings-muted">
+                    {`${t("envPath")}: ${logView.logPath}`}
+                  </p>
+                  <pre className="reme-env-log">
+                    {logView.lines || t("logEmpty")}
+                  </pre>
+                  <button
+                    type="button"
+                    className="reme-settings-button"
+                    onClick={() =>
+                      setLogView({ open: false, lines: "", logPath: "" })
+                    }
+                  >
+                    {t("dismiss")}
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </section>
         </>
       )}

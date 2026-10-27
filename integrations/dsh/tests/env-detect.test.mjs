@@ -394,10 +394,26 @@ test("detects, classifies and suggests Windows interpreters end to end", async (
   assert.equal(store.origin.kind, "windows-store");
   assert.equal(store.ok, true);
 
-  assert.deepEqual(base.reme, { installed: true, version: "0.4.0.9" });
-  assert.deepEqual(named.reme, { installed: true, version: "0.4.0.9" });
-  assert.deepEqual(pythonOrg.reme, { installed: true, version: "0.4.1.11" });
-  assert.deepEqual(store.reme, { installed: false, version: "" });
+  assert.deepEqual(base.reme, {
+    installed: true,
+    version: "0.4.0.9",
+    versionOk: true,
+  });
+  assert.deepEqual(named.reme, {
+    installed: true,
+    version: "0.4.0.9",
+    versionOk: true,
+  });
+  assert.deepEqual(pythonOrg.reme, {
+    installed: true,
+    version: "0.4.1.11",
+    versionOk: true,
+  });
+  assert.deepEqual(store.reme, {
+    installed: false,
+    version: "",
+    versionOk: false,
+  });
 });
 
 test("suggests nothing usable by preferring reme installs, then named conda envs", () => {
