@@ -354,6 +354,10 @@ function ReMeSettingsCard({
                   typeof value.authToken === "string" ? value.authToken : "",
                 pythonPath:
                   typeof value.pythonPath === "string" ? value.pythonPath : "",
+                remeWorkspaceDir:
+                  typeof value.remeWorkspaceDir === "string"
+                    ? value.remeWorkspaceDir
+                    : "",
               }
             : undefined,
         );
@@ -755,7 +759,10 @@ function draftFrom(value: ReMeSettings): Draft {
 
 function parseDraft(
   draft: Draft,
-  passthrough?: Pick<ReMeSettings, "authToken" | "pythonPath">,
+  passthrough?: Pick<
+    ReMeSettings,
+    "authToken" | "pythonPath" | "remeWorkspaceDir"
+  >,
 ): ReMeSettings | undefined {
   const requestTimeoutMs = boundedInteger(draft.requestTimeoutMs, 1000, 120000);
   const backgroundTimeoutMs = boundedInteger(
@@ -799,6 +806,7 @@ function parseDraft(
     endpoint: draft.endpoint.trim().replace(/\/+$/, ""),
     authToken: passthrough?.authToken ?? "",
     pythonPath: passthrough?.pythonPath ?? "",
+    remeWorkspaceDir: passthrough?.remeWorkspaceDir ?? "",
     requestTimeoutMs: requestTimeoutMs!,
     backgroundTimeoutMs: backgroundTimeoutMs!,
     shutdownTimeoutMs: shutdownTimeoutMs!,

@@ -4,6 +4,7 @@ export interface ReMeConfigInput {
   endpoint?: string;
   authToken?: string;
   pythonPath?: string;
+  remeWorkspaceDir?: string;
   requestTimeoutMs?: number;
   backgroundTimeoutMs?: number;
   shutdownTimeoutMs?: number;
@@ -26,6 +27,7 @@ export interface ReMeConfig extends ReMeClientConfig {
   shutdownTimeoutMs: number;
   authToken: string;
   pythonPath: string;
+  remeWorkspaceDir: string;
   autoMemoryEnabled: boolean;
   autoMemoryInterval: number;
   autoMemoryQueueDir: string;

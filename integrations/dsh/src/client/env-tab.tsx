@@ -9,6 +9,7 @@ import type {
   PythonEnv,
   PythonOrigin,
 } from "../pyenv/types.js";
+import type { EnvSummary, LlmTestResult } from "../pyenv/workspace.js";
 import { ReMeClient } from "../reme/client.js";
 import type { ReMeSettings } from "../types.js";
 import type { StatusRpc } from "./status-page.js";
@@ -83,6 +84,33 @@ export const envEn = {
   mirrorAliyun: "Aliyun",
   condaHint:
     "In a conda environment pip still works; if dependency conflicts appear, prefer a dedicated environment.",
+  configHint:
+    "ReMe reads credentials from the workspace .env at service start. Secrets stay in that file; DSH settings never store them.",
+  workspaceDir: "Workspace directory",
+  workspaceDirHint:
+    "Empty means ~/.reme. Restart the service after changing it.",
+  saveWorkspace: "Save path",
+  envLoading: "Loading .env…",
+  envMissing: "No .env yet; saving creates it.",
+  envPath: "File",
+  llmGroup: "LLM (auto memory / consolidation)",
+  embeddingGroup: "Embedding",
+  backendLabel: "Backend",
+  modelLabel: "Model",
+  apiKeyLabel: "API key",
+  baseUrlLabel: "Base URL",
+  secretSet: "Set {masked}; leave blank to keep",
+  secretUnset: "Not set",
+  embeddingHint:
+    "ReMe 0.4.0.x requires a non-empty key even without vector search; EMPTY is the placeholder.",
+  saveEnv: "Save to .env",
+  savingEnv: "Saving…",
+  savedEnv: "Saved to {path}",
+  saveEnvFailed: "Saving failed",
+  testLlmButton: "Test LLM connection",
+  testingLlm: "Testing…",
+  llmOk: "LLM reachable ({ms} ms)",
+  llmFailed: "LLM test failed",
   configTitle: "ReMe parameters",
   controlTitle: "Service control",
   upcoming:
@@ -155,6 +183,32 @@ export const envZh: typeof envEn = {
   mirrorAliyun: "阿里云镜像",
   condaHint:
     "conda 环境中使用 pip 通常没有问题；如遇依赖冲突，建议使用专用环境。",
+  configHint:
+    "ReMe 在服务启动时从 workspace 的 .env 读取凭据。密钥只保存在该文件里，不写入 DSH 设置。",
+  workspaceDir: "Workspace 目录",
+  workspaceDirHint: "留空表示 ~/.reme；修改后需重启服务。",
+  saveWorkspace: "保存路径",
+  envLoading: "正在读取 .env…",
+  envMissing: "尚未创建 .env；保存后自动创建。",
+  envPath: "文件",
+  llmGroup: "LLM（自动记忆 / 记忆整理）",
+  embeddingGroup: "Embedding",
+  backendLabel: "后端",
+  modelLabel: "模型",
+  apiKeyLabel: "API Key",
+  baseUrlLabel: "Base URL",
+  secretSet: "已设置 {masked}；留空保持不变",
+  secretUnset: "未设置",
+  embeddingHint:
+    "ReMe 0.4.0.x 即使不使用向量检索也要求此项非空，占位值 EMPTY 即可。",
+  saveEnv: "保存到 .env",
+  savingEnv: "正在保存…",
+  savedEnv: "已保存到 {path}",
+  saveEnvFailed: "保存失败",
+  testLlmButton: "测试 LLM 连接",
+  testingLlm: "正在测试…",
+  llmOk: "LLM 连接正常（{ms} ms）",
+  llmFailed: "LLM 测试失败",
   configTitle: "ReMe 参数",
   controlTitle: "服务控制",
   upcoming: "该分区将随环境管理特性的后续里程碑提供。",
@@ -194,6 +248,22 @@ interface InstallState {
   phase: "idle" | "running" | "done";
   job?: InstallStatus;
   error?: string;
+}
+
+interface EnvState {
+  phase: "loading" | "ready" | "error";
+  data?: EnvSummary;
+  error?: string;
+}
+
+interface EnvResultState {
+  kind: "" | "saved" | "failed";
+  message?: string;
+}
+
+interface LlmTestState {
+  phase: "idle" | "running" | "ok" | "fail";
+  result?: LlmTestResult;
 }
 
 function isLocalEndpoint(endpoint: string): boolean {
@@ -285,6 +355,15 @@ export function ReMeEnvironmentTab({
   const [confirming, setConfirming] = useState(false);
   const [mirror, setMirror] = useState("");
   const [now, setNow] = useState(0);
+  const [env, setEnv] = useState<EnvState>({ phase: "loading" });
+  const [envDraft, setEnvDraft] = useState<Record<string, string>>({});
+  const [envSaving, setEnvSaving] = useState(false);
+  const [envResult, setEnvResult] = useState<EnvResultState>({ kind: "" });
+  const [llmTest, setLlmTest] = useState<LlmTestState>({ phase: "idle" });
+  const [envTick, setEnvTick] = useState(0);
+  const [workspaceInput, setWorkspaceInput] = useState<string | undefined>(
+    undefined,
+  );
 
   // Derived values must precede hook dependency arrays.
   const detected = detection.phase === "ready" ? detection.data : undefined;
@@ -297,6 +376,8 @@ export function ReMeEnvironmentTab({
   const local = isLocalEndpoint(endpoint);
   const healthCurrent =
     health.phase !== "loading" && health.endpoint === endpoint;
+  const workspaceDir = value?.remeWorkspaceDir ?? "";
+  const workspaceDraft = workspaceInput ?? workspaceDir;
 
   const loadDetection = useCallback(
     async (signal: AbortSignal, refresh: boolean) => {
@@ -497,6 +578,40 @@ export function ReMeEnvironmentTab({
     return () => clearInterval(timer);
   }, [install.phase]);
 
+  const loadEnv = useCallback(
+    async (signal: AbortSignal, dir: string) => {
+      try {
+        const result = await rpc.call(
+          "/api",
+          "remeEnv/readEnv",
+          { args: { input: { workspaceDir: dir } } },
+          signal,
+        );
+        if (!result.ok)
+          throw new Error(result.error.message || result.error.code);
+        setEnv((current) => ({
+          ...current,
+          phase: "ready",
+          data: parseEnvSummary(result.value),
+        }));
+      } catch (error) {
+        if (!signal.aborted)
+          setEnv((current) => ({
+            ...current,
+            phase: "error",
+            error: safeError(error),
+          }));
+      }
+    },
+    [rpc],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadEnv(controller.signal, workspaceDir);
+    return () => controller.abort();
+  }, [loadEnv, workspaceDir, envTick]);
+
   if (snapshot.status === "unavailable") return null;
 
   const select = (env: PythonEnv): void => {
@@ -540,6 +655,99 @@ export function ReMeEnvironmentTab({
     } catch {
       // Polling reflects the final phase either way.
     }
+  };
+
+  const envValue = (key: string): string => {
+    const draft = envDraft[key];
+    if (draft !== undefined) return draft;
+    const entry = env.data?.entries.find((item) => item.key === key);
+    return entry?.secret ? "" : entry?.value ?? "";
+  };
+
+  const envEntry = (key: string) =>
+    env.data?.entries.find((item) => item.key === key);
+
+  const updateEnvDraft = (key: string, next: string): void => {
+    setEnvDraft((current) => ({ ...current, [key]: next }));
+    setEnvResult({ kind: "" });
+  };
+
+  const saveEnv = async (): Promise<void> => {
+    if (!env.data || envSaving) return;
+    const values: Record<string, string> = {};
+    for (const entry of env.data.entries) {
+      if (!entry.secret) {
+        const next = envValue(entry.key).trim();
+        if (next !== "") values[entry.key] = next;
+        continue;
+      }
+      const typed = envDraft[entry.key];
+      if (typed !== undefined && typed !== "") values[entry.key] = typed;
+      else if (!entry.set && entry.key === "EMBEDDING_API_KEY")
+        values[entry.key] = "EMPTY";
+    }
+    setEnvSaving(true);
+    setEnvResult({ kind: "" });
+    try {
+      const result = await rpc.call("/api", "remeEnv/writeEnv", {
+        args: { input: { workspaceDir, values } },
+      });
+      if (!result.ok)
+        throw new Error(result.error.message || result.error.code);
+      setEnv((current) => ({
+        ...current,
+        phase: "ready",
+        data: parseEnvSummary(result.value),
+      }));
+      setEnvDraft({});
+      setEnvResult({ kind: "saved" });
+    } catch (error) {
+      setEnvResult({ kind: "failed", message: safeError(error) });
+    } finally {
+      setEnvSaving(false);
+    }
+  };
+
+  const runLlmTest = async (): Promise<void> => {
+    if (!selectedPath || llmTest.phase === "running") return;
+    setLlmTest({ phase: "running" });
+    try {
+      const result = await rpc.call("/api", "remeEnv/testLlm", {
+        args: { input: { workspaceDir, pythonPath: selectedPath } },
+      });
+      if (!result.ok)
+        throw new Error(result.error.message || result.error.code);
+      const data = parseLlmResult(result.value);
+      setLlmTest({ phase: data.ok ? "ok" : "fail", result: data });
+    } catch (error) {
+      setLlmTest({
+        phase: "fail",
+        result: {
+          ok: false,
+          status: 0,
+          latencyMs: 0,
+          error: safeError(error),
+        },
+      });
+    }
+  };
+
+  const saveWorkspace = async (): Promise<void> => {
+    if (!value || !snapshot.writable) return;
+    await scope
+      .mutate(
+        [
+          {
+            op: "set",
+            path: ["remeWorkspaceDir"],
+            value: workspaceDraft.trim(),
+          },
+        ],
+        snapshot.revision,
+      )
+      .catch(() => undefined);
+    setWorkspaceInput(undefined);
+    setEnvTick((tick) => tick + 1);
   };
 
   return (
@@ -895,9 +1103,222 @@ export function ReMeEnvironmentTab({
           </section>
           <section className="reme-settings-section">
             <h4>{t("configTitle")}</h4>
-            <p className="reme-settings-muted reme-env-upcoming">
-              {t("upcoming")}
-            </p>
+            <p className="reme-settings-muted">{t("configHint")}</p>
+            <div className="reme-settings-grid">
+              <EnvField label={t("workspaceDir")} hint={t("workspaceDirHint")}>
+                <div className="reme-env-inline">
+                  <input
+                    value={workspaceDraft}
+                    placeholder="~/.reme"
+                    onChange={(event) => setWorkspaceInput(event.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="reme-settings-button"
+                    disabled={!snapshot.writable || envSaving}
+                    onClick={() => void saveWorkspace()}
+                  >
+                    {t("saveWorkspace")}
+                  </button>
+                </div>
+              </EnvField>
+            </div>
+            {env.phase === "loading" ? (
+              <p className="reme-settings-muted">{t("envLoading")}</p>
+            ) : null}
+            {env.phase === "error" ? (
+              <p className="reme-settings-error">
+                {t("saveEnvFailed")}
+                {env.error ? `: ${env.error}` : ""}
+              </p>
+            ) : null}
+            {env.phase === "ready" && env.data ? (
+              <>
+                <p className="reme-settings-muted">
+                  {env.data.exists
+                    ? `${t("envPath")}: ${env.data.envPath}`
+                    : t("envMissing")}
+                </p>
+                <div className="reme-settings-grid reme-env-config">
+                  <h5 className="reme-env-group">{t("llmGroup")}</h5>
+                  <EnvField label={t("backendLabel")}>
+                    <select
+                      value={envValue("LLM_BACKEND")}
+                      onChange={(event) =>
+                        updateEnvDraft("LLM_BACKEND", event.target.value)
+                      }
+                    >
+                      <option value="">—</option>
+                      {envOptions(LLM_BACKENDS, envValue("LLM_BACKEND")).map(
+                        (name) => (
+                          <option key={name} value={name}>
+                            {name}
+                          </option>
+                        ),
+                      )}
+                    </select>
+                  </EnvField>
+                  <EnvField label={t("modelLabel")}>
+                    <input
+                      value={envValue("LLM_MODEL_NAME")}
+                      placeholder="qwen3.7-plus"
+                      onChange={(event) =>
+                        updateEnvDraft("LLM_MODEL_NAME", event.target.value)
+                      }
+                    />
+                  </EnvField>
+                  <EnvField
+                    label={t("apiKeyLabel")}
+                    hint={
+                      envEntry("LLM_API_KEY")?.set
+                        ? t("secretSet").replace(
+                            "{masked}",
+                            envEntry("LLM_API_KEY")?.masked ?? "",
+                          )
+                        : t("secretUnset")
+                    }
+                  >
+                    <input
+                      type="password"
+                      autoComplete="off"
+                      value={envDraft["LLM_API_KEY"] ?? ""}
+                      placeholder={envEntry("LLM_API_KEY")?.masked ?? ""}
+                      onChange={(event) =>
+                        updateEnvDraft("LLM_API_KEY", event.target.value)
+                      }
+                    />
+                  </EnvField>
+                  <EnvField label={t("baseUrlLabel")}>
+                    <input
+                      value={envValue("LLM_BASE_URL")}
+                      placeholder="https://…/v1"
+                      onChange={(event) =>
+                        updateEnvDraft("LLM_BASE_URL", event.target.value)
+                      }
+                    />
+                  </EnvField>
+                  <h5 className="reme-env-group">{t("embeddingGroup")}</h5>
+                  <EnvField label={t("backendLabel")}>
+                    <select
+                      value={envValue("EMBEDDING_BACKEND")}
+                      onChange={(event) =>
+                        updateEnvDraft("EMBEDDING_BACKEND", event.target.value)
+                      }
+                    >
+                      <option value="">—</option>
+                      {envOptions(
+                        EMBEDDING_BACKENDS,
+                        envValue("EMBEDDING_BACKEND"),
+                      ).map((name) => (
+                        <option key={name} value={name}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  </EnvField>
+                  <EnvField label={t("modelLabel")}>
+                    <input
+                      value={envValue("EMBEDDING_MODEL_NAME")}
+                      placeholder="text-embedding-v4"
+                      onChange={(event) =>
+                        updateEnvDraft(
+                          "EMBEDDING_MODEL_NAME",
+                          event.target.value,
+                        )
+                      }
+                    />
+                  </EnvField>
+                  <EnvField
+                    label={t("apiKeyLabel")}
+                    hint={
+                      envEntry("EMBEDDING_API_KEY")?.set
+                        ? t("secretSet").replace(
+                            "{masked}",
+                            envEntry("EMBEDDING_API_KEY")?.masked ?? "",
+                          )
+                        : t("secretUnset")
+                    }
+                  >
+                    <input
+                      type="password"
+                      autoComplete="off"
+                      value={envDraft["EMBEDDING_API_KEY"] ?? ""}
+                      placeholder={
+                        envEntry("EMBEDDING_API_KEY")?.masked ?? "EMPTY"
+                      }
+                      onChange={(event) =>
+                        updateEnvDraft("EMBEDDING_API_KEY", event.target.value)
+                      }
+                    />
+                  </EnvField>
+                  <EnvField label={t("baseUrlLabel")} hint={t("embeddingHint")}>
+                    <input
+                      value={envValue("EMBEDDING_BASE_URL")}
+                      placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+                      onChange={(event) =>
+                        updateEnvDraft("EMBEDDING_BASE_URL", event.target.value)
+                      }
+                    />
+                  </EnvField>
+                </div>
+                <div className="reme-env-actions">
+                  <button
+                    type="button"
+                    className="reme-settings-save"
+                    disabled={envSaving || !snapshot.writable}
+                    onClick={() => void saveEnv()}
+                  >
+                    {t(envSaving ? "savingEnv" : "saveEnv")}
+                  </button>
+                  <button
+                    type="button"
+                    className="reme-settings-button"
+                    disabled={!selectedPath || llmTest.phase === "running"}
+                    onClick={() => void runLlmTest()}
+                  >
+                    {t(
+                      llmTest.phase === "running"
+                        ? "testingLlm"
+                        : "testLlmButton",
+                    )}
+                  </button>
+                  <span className="reme-settings-result" role="status">
+                    {envResult.kind === "saved" ? (
+                      <span className="reme-settings-success">
+                        {t("savedEnv").replace(
+                          "{path}",
+                          env.data?.envPath ?? "",
+                        )}
+                      </span>
+                    ) : null}
+                    {envResult.kind === "failed" ? (
+                      <span className="reme-settings-error">
+                        {`${t("saveEnvFailed")}${
+                          envResult.message ? `: ${envResult.message}` : ""
+                        }`}
+                      </span>
+                    ) : null}
+                    {llmTest.phase === "ok" && llmTest.result ? (
+                      <span className="reme-settings-success">
+                        {t("llmOk").replace(
+                          "{ms}",
+                          String(llmTest.result.latencyMs),
+                        )}
+                      </span>
+                    ) : null}
+                    {llmTest.phase === "fail" && llmTest.result ? (
+                      <span className="reme-settings-error">
+                        {`${t("llmFailed")}${
+                          llmTest.result.error
+                            ? `: ${llmTest.result.error}`
+                            : ""
+                        }`}
+                      </span>
+                    ) : null}
+                  </span>
+                </div>
+              </>
+            ) : null}
           </section>
           <section className="reme-settings-section">
             <h4>{t("controlTitle")}</h4>
@@ -909,4 +1330,60 @@ export function ReMeEnvironmentTab({
       )}
     </div>
   );
+}
+
+const LLM_BACKENDS = [
+  "openai",
+  "dashscope",
+  "deepseek",
+  "anthropic",
+  "gemini",
+  "moonshot",
+  "ollama",
+  "xai",
+] as const;
+const EMBEDDING_BACKENDS = [
+  "openai",
+  "dashscope",
+  "dashscope_multimodal",
+  "gemini",
+  "ollama",
+] as const;
+
+function envOptions(list: readonly string[], current: string): string[] {
+  return current && !list.includes(current) ? [...list, current] : [...list];
+}
+
+function EnvField({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: JSX.Element;
+}): JSX.Element {
+  return (
+    <div className="reme-settings-field">
+      <label>{label}</label>
+      {children}
+      {hint ? <small>{hint}</small> : null}
+    </div>
+  );
+}
+
+function parseEnvSummary(value: unknown): EnvSummary {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !Array.isArray((value as { entries?: unknown }).entries)
+  )
+    throw new Error("Invalid .env summary response");
+  return value as unknown as EnvSummary;
+}
+
+function parseLlmResult(value: unknown): LlmTestResult {
+  if (typeof value !== "object" || value === null)
+    throw new Error("Invalid LLM test response");
+  return value as unknown as LlmTestResult;
 }

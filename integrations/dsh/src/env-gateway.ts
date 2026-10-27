@@ -4,6 +4,7 @@ import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import type { InstallStatus } from "./pyenv/install.js";
 import type { RemeCheck } from "./pyenv/reme.js";
 import type { PythonDetection } from "./pyenv/types.js";
+import type { EnvSummary, LlmTestResult } from "./pyenv/workspace.js";
 import type { ReMeEnvManager } from "./env-manager.js";
 
 declare module "@deepseek-ai/cordis" {
@@ -70,6 +71,38 @@ export class ReMeEnvGateway extends TypertRemoteService {
   @Remote("installCancel")
   async installCancel(input: { jobId?: string } | undefined): Promise<boolean> {
     return this.ctx.remeEnv.installCancel(input?.jobId ?? "");
+  }
+
+  /** Masked .env values for the workspace; secrets are never returned. */
+  @Remote("readEnv")
+  async readEnv(
+    input: { workspaceDir?: string } | undefined,
+  ): Promise<EnvSummary> {
+    return this.ctx.remeEnv.readEnv(input?.workspaceDir ?? "");
+  }
+
+  /** Merge edited values into the workspace .env and return fresh state. */
+  @Remote("writeEnv")
+  async writeEnv(
+    input:
+      | { workspaceDir?: string; values?: Record<string, string> }
+      | undefined,
+  ): Promise<EnvSummary> {
+    return this.ctx.remeEnv.writeEnv(
+      input?.workspaceDir ?? "",
+      input?.values ?? {},
+    );
+  }
+
+  /** Probe the configured LLM endpoint with the selected interpreter. */
+  @Remote("testLlm")
+  async testLlm(
+    input: { workspaceDir?: string; pythonPath?: string } | undefined,
+  ): Promise<LlmTestResult> {
+    return this.ctx.remeEnv.testLlm(
+      input?.workspaceDir ?? "",
+      input?.pythonPath ?? "",
+    );
   }
 }
 

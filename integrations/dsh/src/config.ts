@@ -31,6 +31,11 @@ export const Config = z.object({
     .default("")
     .description("Local Python interpreter selected in environment management")
     .volatile(),
+  remeWorkspaceDir: z
+    .string()
+    .default("")
+    .description("ReMe workspace directory (empty means ~/.reme)")
+    .volatile(),
   requestTimeoutMs: z.natural().min(1000).max(120000).default(10000).volatile(),
   backgroundTimeoutMs: z
     .natural()
@@ -100,6 +105,7 @@ const DEFAULT_CONFIG: Readonly<ReMeConfig> = Object.freeze({
   endpoint: "http://127.0.0.1:2333",
   authToken: "",
   pythonPath: "",
+  remeWorkspaceDir: "",
   requestTimeoutMs: 10000,
   backgroundTimeoutMs: 3600000,
   shutdownTimeoutMs: 5000,
@@ -160,6 +166,10 @@ export function resolveConfig(
     );
   config.pythonPath =
     typeof config.pythonPath === "string" ? config.pythonPath.trim() : "";
+  config.remeWorkspaceDir =
+    typeof config.remeWorkspaceDir === "string"
+      ? config.remeWorkspaceDir.trim()
+      : "";
   const home = env.DSH_HOME?.trim() || `${homedir()}/.dsh`;
   const queueDir = config.autoMemoryQueueDir || `${home}/reme-memory/outbox`;
   config.autoMemoryQueueDir = resolve(

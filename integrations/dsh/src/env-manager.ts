@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -12,6 +12,16 @@ import {
 import { checkReme, type RemeCheck } from "./pyenv/reme.js";
 import { createNodeRunner } from "./pyenv/runner.js";
 import type { PythonDetection } from "./pyenv/types.js";
+import {
+  envSummary,
+  parseEnvFile,
+  resolveWorkspaceDir,
+  testLlm,
+  validateEnvUpdate,
+  writeEnvFile,
+  type EnvSummary,
+  type LlmTestResult,
+} from "./pyenv/workspace.js";
 
 const CACHE_MS = 60_000;
 
@@ -70,5 +80,41 @@ export class ReMeEnvManager {
 
   installCancel(jobId?: string): boolean {
     return this.installs.cancel(jobId);
+  }
+
+  /** Masked .env projection for the selected workspace. */
+  readEnv(workspaceDir: string): EnvSummary {
+    const dir = resolveWorkspaceDir(workspaceDir, homedir());
+    return envSummary(join(dir, ".env"), dir);
+  }
+
+  /**
+   * Merge edited values into the workspace .env. Validation covers the whole
+   * effective file, so an untouched real key still satisfies the requirement.
+   */
+  writeEnv(workspaceDir: string, values: Record<string, string>): EnvSummary {
+    const dir = resolveWorkspaceDir(workspaceDir, homedir());
+    const path = join(dir, ".env");
+    let existing: Record<string, string> = {};
+    try {
+      existing = parseEnvFile(readFileSync(path, "utf8"));
+    } catch {
+      // First write creates the file.
+    }
+    validateEnvUpdate({ ...existing, ...values });
+    writeEnvFile(path, values);
+    return envSummary(path, dir);
+  }
+
+  /** One-off LLM connectivity probe reading the workspace .env. */
+  async testLlm(
+    workspaceDir: string,
+    pythonPath: string,
+  ): Promise<LlmTestResult> {
+    const dir = resolveWorkspaceDir(workspaceDir, homedir());
+    return testLlm(
+      { run: createNodeRunner(this.env) },
+      { workspaceDir: dir, pythonPath },
+    );
   }
 }
