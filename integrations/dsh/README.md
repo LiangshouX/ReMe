@@ -113,6 +113,7 @@ If an earlier upgrade already renamed `settings.yaml` to `settings.yaml.imported
 | UI meaning             | Configuration key      | Default                 | Description                                                     |
 | ---------------------- | ---------------------- | ----------------------- | --------------------------------------------------------------- |
 | Service URL            | `endpoint`             | `http://127.0.0.1:2333` | Absolute HTTP(S) URL without credentials, query, or fragment.   |
+| Auth token (optional)  | `authToken`            | empty                   | Bearer token for a self-hosted gateway; stored in clear text in the profile, trusted networks only. |
 | Guidance language      | `language`             | `en`                    | `en` or `zh`; controls guidance injected into new sessions.     |
 | Default search results | `searchLimit`          | `5`                     | Default `reme_search` result limit, from 1 to 50.               |
 | Search timeout         | `requestTimeoutMs`     | `10000`                 | Search timeout in milliseconds, from 1,000 to 120,000.          |
@@ -129,6 +130,25 @@ If an earlier upgrade already renamed `settings.yaml` to `settings.yaml.imported
 | Maximum retry delay    | `autoMemoryRetryMaxMs` | `60000`                 | Upper bound for retry delay.                                    |
 
 Deployment configuration also supports `REME_URL`, or `REME_HOST` together with `REME_PORT`. The timer-only test option `dreamIntervalMs` is intentionally excluded from user settings.
+
+## 4.1 Environment management (Environment tab)
+
+The **Environment** tab (inside **Plugins → ReMe bundle → reme-memory → Configure**) covers setup that otherwise needs a separate terminal: local Python discovery, installing ReMe, writing credentials, and starting the service. It applies to a local endpoint; a remote service URL only shows connection state.
+
+| Section | Capability |
+| ------- | ---------- |
+| Service connection | Shows the configured URL and health; manual connection test |
+| Local Python | Discovers PEP 514 registry entries, the py launcher, PATH and conda (base and named environments), labels their origin and `reme-ai` state, and stores the selection in `pythonPath` |
+| ReMe dependency | Checks `reme-ai` version, the `[core]` extras and the `reme` CLI for the selected interpreter; installs or upgrades `reme-ai[core]` with an optional package index, live log and cancel |
+| ReMe parameters | Edits the workspace `.env`; secrets stay in that file and are shown masked (last four characters). Saving requires a non-empty `EMBEDDING_API_KEY`, because ReMe 0.4.0.x aborts startup without one (`EMPTY` is a valid placeholder). Provides an LLM connectivity test |
+| Service control | Starts and stops the local ReMe service, showing PID, version and log; startup injects UTF-8 and `NO_PROXY`, sets `enable_logo=false`, and runs inside the workspace so `.env` discovery works |
+
+Notes:
+
+- `workspace_dir` is always absolute; the default workspace is `~/.reme`.
+- Services started here record their PID and launch arguments in `$DSH_HOME/reme-memory/service.json`, enabling a one-click stop. Instances started elsewhere are only observed.
+- Installing `reme-ai[core]` downloads large dependencies (about 15 minutes in our local test); the job runs in the Host and survives closing the configuration page.
+- The optional auto-start setting pulls the service up when DSH starts; it is off by default.
 
 ## 5. Memory context injection
 
