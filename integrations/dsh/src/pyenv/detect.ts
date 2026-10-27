@@ -3,6 +3,7 @@ import { join as posixJoin } from "node:path/posix";
 
 import { safeError } from "../endpoint.js";
 import type { RunCommand, RunResult } from "./runner.js";
+import { probeReme, remeVersionAtLeast } from "./reme.js";
 import type { PythonDetection, PythonEnv, PythonOrigin } from "./types.js";
 
 /** ReMe requires Python 3.11 or newer. */
@@ -340,13 +341,36 @@ function compareEnvs(a: PythonEnv, b: PythonEnv): number {
   return a.exe.localeCompare(b.exe);
 }
 
-/** Prefer a named conda env, then any usable interpreter. */
+/** Prefer a named conda env with a usable reme, then any reme env. */
 export function suggestInterpreter(envs: PythonEnv[]): string {
   const usable = envs.filter((env) => env.ok);
-  const named = usable.find(
-    (env) => env.origin.kind === "conda" && env.origin.envName !== "base",
+  // An installed-but-outdated reme does not make an interpreter ready.
+  const withReme = usable.filter(
+    (env) =>
+      env.reme?.installed === true && remeVersionAtLeast(env.reme.version),
   );
-  return (named ?? usable[0])?.exe ?? "";
+  const named = (list: PythonEnv[]): PythonEnv | undefined =>
+    list.find(
+      (env) => env.origin.kind === "conda" && env.origin.envName !== "base",
+    );
+  return (
+    (named(withReme) ?? withReme[0] ?? named(usable) ?? usable[0])?.exe ?? ""
+  );
+}
+
+/** Probe reme-ai in every interpreter so the list shows setup state. */
+async function enrichWithReme(envs: PythonEnv[], io: DetectIO): Promise<void> {
+  const queue = [...envs];
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const env = queue.shift();
+      if (!env) return;
+      env.reme = await probeReme(io, env.exe);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(6, envs.length) }, () => worker()),
+  );
 }
 
 async function verifyCandidates(
@@ -512,6 +536,7 @@ export async function detectPythonEnvs(io: DetectIO): Promise<PythonDetection> {
     });
   }
   const envs = [...merged.values()];
+  await enrichWithReme(envs, io);
   envs.sort(compareEnvs);
   return {
     platform: io.platform,

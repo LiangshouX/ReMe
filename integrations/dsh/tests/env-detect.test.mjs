@@ -33,7 +33,9 @@ const VERIFY_ARG0 = "-c";
 function verifyRule(exe, version, base) {
   return {
     match: (actual, args) =>
-      actual.toLowerCase() === exe.toLowerCase() && args[0] === VERIFY_ARG0,
+      actual.toLowerCase() === exe.toLowerCase() &&
+      args[0] === VERIFY_ARG0 &&
+      String(args[1]).includes("import sys"),
     result: {
       code: 0,
       stdout: `note\n{"exe":"${exe.replaceAll(
@@ -42,6 +44,19 @@ function verifyRule(exe, version, base) {
       )}","ver":"${version}","base":"${base.replaceAll("\\", "\\\\")}"}\n`,
       stderr: "",
     },
+  };
+}
+
+/** reme-ai metadata probe; version null means "not installed". */
+function remeRule(exe, version) {
+  return {
+    match: (actual, args) =>
+      actual.toLowerCase() === exe.toLowerCase() &&
+      args[0] === VERIFY_ARG0 &&
+      String(args[1]).includes("importlib.metadata"),
+    result: version
+      ? { code: 0, stdout: `${version}\n`, stderr: "" }
+      : { code: 1, stdout: "", stderr: "PackageNotFoundError" },
   };
 }
 
@@ -152,6 +167,12 @@ function windowsFixture() {
     verifyRule("C:\\Python312\\python.exe", "3.12.2", "C:\\Python312"),
     verifyRule("C:\\Python38\\python.exe", "3.8.10", "C:\\Python38"),
     verifyRule(`${storePackage}\\python.exe`, "3.11.9", storePackage),
+    remeRule(`${miniconda}\\python.exe`, "0.4.0.9"),
+    remeRule(`${remeServe}\\python.exe`, "0.4.0.9"),
+    remeRule(`${old38}\\python.exe`, null),
+    remeRule("C:\\Python312\\python.exe", "0.4.1.11"),
+    remeRule("C:\\Python38\\python.exe", null),
+    remeRule(`${storePackage}\\python.exe`, null),
   ];
   return {
     rules,
@@ -372,9 +393,14 @@ test("detects, classifies and suggests Windows interpreters end to end", async (
   assert.ok(store);
   assert.equal(store.origin.kind, "windows-store");
   assert.equal(store.ok, true);
+
+  assert.deepEqual(base.reme, { installed: true, version: "0.4.0.9" });
+  assert.deepEqual(named.reme, { installed: true, version: "0.4.0.9" });
+  assert.deepEqual(pythonOrg.reme, { installed: true, version: "0.4.1.11" });
+  assert.deepEqual(store.reme, { installed: false, version: "" });
 });
 
-test("suggests nothing usable by preferring named conda envs then any usable interpreter", () => {
+test("suggests nothing usable by preferring reme installs, then named conda envs", () => {
   assert.equal(
     suggestInterpreter([
       {
@@ -412,6 +438,50 @@ test("suggests nothing usable by preferring named conda envs then any usable int
       },
     ]),
     "c",
+  );
+  // A reme-enabled interpreter outranks a bare named conda env.
+  assert.equal(
+    suggestInterpreter([
+      {
+        exe: "a",
+        version: "3.12.0",
+        ok: true,
+        origin: { kind: "conda", envName: "tools", root: "r" },
+        source: "",
+        reme: { installed: false, version: "" },
+      },
+      {
+        exe: "b",
+        version: "3.12.0",
+        ok: true,
+        origin: { kind: "python.org" },
+        source: "",
+        reme: { installed: true, version: "0.4.0.9" },
+      },
+    ]),
+    "b",
+  );
+  // An outdated reme does not make an interpreter ready.
+  assert.equal(
+    suggestInterpreter([
+      {
+        exe: "a",
+        version: "3.12.0",
+        ok: true,
+        origin: { kind: "conda", envName: "tools", root: "r" },
+        source: "",
+        reme: { installed: true, version: "0.3.1.8" },
+      },
+      {
+        exe: "b",
+        version: "3.12.0",
+        ok: true,
+        origin: { kind: "conda", envName: "other", root: "r" },
+        source: "",
+        reme: { installed: false, version: "" },
+      },
+    ]),
+    "a",
   );
   assert.equal(suggestInterpreter([]), "");
 });
@@ -457,7 +527,9 @@ test("detects Unix interpreters and merges paths that resolve together", async (
     // /usr/bin/python is a shim whose sys.executable reports python3.
     {
       match: (actual, args) =>
-        actual === "/usr/bin/python" && args[0] === VERIFY_ARG0,
+        actual === "/usr/bin/python" &&
+        args[0] === VERIFY_ARG0 &&
+        String(args[1]).includes("import sys"),
       result: {
         code: 0,
         stdout: '{"exe":"/usr/bin/python3","ver":"3.10.12","base":"/usr"}\n',
@@ -474,6 +546,10 @@ test("detects Unix interpreters and merges paths that resolve together", async (
       "3.11.9",
       "/home/u/miniconda3/envs/reme",
     ),
+    remeRule("/usr/bin/python3", null),
+    remeRule("/usr/bin/python", null),
+    remeRule("/home/u/miniconda3/bin/python3", "0.4.1.11"),
+    remeRule("/home/u/miniconda3/envs/reme/bin/python3", "0.4.1.11"),
   ];
   const detection = await detectPythonEnvs({
     run: fakeRun(rules),

@@ -53,5 +53,18 @@ export const styles = `
 .reme-env-hint strong{color:var(--dsw-alias-label-primary)}
 .reme-env-upcoming{margin:0;padding:4px 0 12px}
 .reme-env .reme-settings-details{margin-top:8px}
+.reme-env-checks{display:flex;flex-direction:column;border-top:1px solid var(--dsw-alias-border-l2);margin-top:4px}
+.reme-env-check{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);font-size:12px}
+.reme-env-check>span:first-child{flex:none;font-weight:500;color:var(--dsw-alias-label-primary)}
+.reme-env-check .reme-status-badge{max-width:75%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.reme-env-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2)}
+.reme-env-mirror{display:flex;align-items:center;gap:6px;color:var(--dsw-alias-label-secondary);font-size:12px}
+.reme-env-mirror select{min-height:28px;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);padding:2px 8px;font:inherit;font-size:12px}
+.reme-env-confirm{flex:1 0 100%;display:flex;flex-wrap:wrap;align-items:center;gap:8px;border:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 25%,var(--dsw-alias-border-l2));border-radius:9px;background:color-mix(in srgb,var(--dsw-alias-brand-primary) 5%,transparent);padding:9px 12px}
+.reme-env-confirm p{flex:1 0 100%;margin:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.5}
+.reme-env-hint-inline{flex:1 0 100%;margin:0}
+.reme-env-progress{padding-top:10px}
+.reme-env-log{max-height:220px;overflow:auto;margin:6px 0 0;border-radius:8px;background:var(--dsw-alias-bg-layer-3);padding:10px 12px;font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.reme-env-result{padding-top:10px;border-top:1px solid var(--dsw-alias-border-l2)}
 @media(max-width:760px){.reme-settings-health,.reme-settings-component-grid,.reme-status-component-grid,.reme-status-capability-grid{grid-template-columns:1fr}.reme-settings-result{display:none}.reme-status-overview-hero{grid-template-columns:1fr}.reme-status-overview-actions{grid-column:1;grid-row:auto;flex-direction:row}.reme-status-overview-actions .reme-status-button{flex:1}.reme-status-file-browser{grid-template-columns:1fr}.reme-status-file-browser>aside{max-height:210px;border-right:0;border-bottom:1px solid var(--dsw-alias-border-l2)}.reme-status-file-browser>article{min-height:300px}.reme-status-task-list summary{grid-template-columns:1fr}}
 `;

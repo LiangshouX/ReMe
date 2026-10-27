@@ -17,6 +17,8 @@ export interface PythonEnv {
   origin: PythonOrigin;
   /** Human-readable discovery channels, e.g. "conda env list; PATH". */
   source: string;
+  /** reme-ai installation facts, probed for the interpreter recommendation. */
+  reme?: { installed: boolean; version: string };
 }
 
 export interface PythonDetection {

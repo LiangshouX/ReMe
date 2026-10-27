@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 
 import { safeError } from "../endpoint.js";
+import type { InstallStatus } from "../pyenv/install.js";
+import type { RemeCheck } from "../pyenv/reme.js";
 import type {
   PythonDetection,
   PythonEnv,
@@ -43,6 +45,44 @@ export const envEn = {
   originUnknown: "Unknown origin",
   errorsTitle: "Probe details",
   dependencyTitle: "ReMe dependency",
+  dependencyHint:
+    "The local service runs on the selected interpreter. reme-ai[core] provides search, automatic memory and memory consolidation.",
+  interpreterLabel: "Interpreter",
+  noInterpreter: "No interpreter selected",
+  selectInterpreterFirst: "Select or install a Python interpreter above first.",
+  recheck: "Check",
+  checkingReme: "Checking ReMe installation…",
+  checkRemeFailed: "ReMe check failed",
+  remeLabel: "reme-ai",
+  coreLabel: "[core] extras",
+  cliLabel: "reme CLI",
+  notInstalled: "Not installed",
+  upgradeRecommended: "upgrade recommended",
+  coreOk: "Available",
+  coreMissing: "Missing (auto_memory / auto_dream unavailable)",
+  cliFallback: "python wrapper fallback",
+  installButton: "Install reme-ai[core]",
+  upgradeButton: "Upgrade reme-ai",
+  reinstall: "Reinstall reme-ai[core]",
+  installConfirm:
+    "Installs into {path}. Packages are downloaded on first use and may take 5–20 minutes depending on the network; progress is shown below.",
+  confirmInstall: "Confirm install",
+  cancel: "Cancel",
+  installing: "Installing",
+  cancelInstall: "Cancel install",
+  waitingForOutput: "Waiting for pip output…",
+  installSucceeded:
+    "ReMe installed. Search, automatic memory and memory consolidation are now available.",
+  installFailed: "Installation failed. See the log below.",
+  installCancelled: "Installation cancelled.",
+  dismiss: "Dismiss",
+  mirrorLabel: "Package index",
+  mirrorDefault: "Default (pip config)",
+  mirrorPypi: "PyPI",
+  mirrorTsinghua: "Tsinghua",
+  mirrorAliyun: "Aliyun",
+  condaHint:
+    "In a conda environment pip still works; if dependency conflicts appear, prefer a dedicated environment.",
   configTitle: "ReMe parameters",
   controlTitle: "Service control",
   upcoming:
@@ -78,6 +118,43 @@ export const envZh: typeof envEn = {
   originUnknown: "来源未知",
   errorsTitle: "探测细节",
   dependencyTitle: "ReMe 依赖",
+  dependencyHint:
+    "本地服务运行在所选解释器上。安装 reme-ai[core] 后即可使用搜索、自动记忆与记忆整理。",
+  interpreterLabel: "解释器",
+  noInterpreter: "尚未选择解释器",
+  selectInterpreterFirst: "请先在上方选择或安装 Python 解释器。",
+  recheck: "检测",
+  checkingReme: "正在检测 ReMe 安装…",
+  checkRemeFailed: "ReMe 检测失败",
+  remeLabel: "reme-ai",
+  coreLabel: "[core] 依赖",
+  cliLabel: "reme CLI",
+  notInstalled: "未安装",
+  upgradeRecommended: "建议升级",
+  coreOk: "可用",
+  coreMissing: "缺失（auto_memory / auto_dream 不可用）",
+  cliFallback: "回退到 python 包装",
+  installButton: "安装 reme-ai[core]",
+  upgradeButton: "升级 reme-ai",
+  reinstall: "重装 reme-ai[core]",
+  installConfirm:
+    "将安装到 {path}。首次使用需要下载依赖，视网络情况通常需要 5–20 分钟，进度见下方日志。",
+  confirmInstall: "确认安装",
+  cancel: "取消",
+  installing: "正在安装",
+  cancelInstall: "取消安装",
+  waitingForOutput: "等待 pip 输出…",
+  installSucceeded: "ReMe 安装完成，搜索、自动记忆与记忆整理现已可用。",
+  installFailed: "安装失败，请查看下方日志。",
+  installCancelled: "安装已取消。",
+  dismiss: "关闭",
+  mirrorLabel: "软件源",
+  mirrorDefault: "默认（pip 配置）",
+  mirrorPypi: "PyPI 官方",
+  mirrorTsinghua: "清华镜像",
+  mirrorAliyun: "阿里云镜像",
+  condaHint:
+    "conda 环境中使用 pip 通常没有问题；如遇依赖冲突，建议使用专用环境。",
   configTitle: "ReMe 参数",
   controlTitle: "服务控制",
   upcoming: "该分区将随环境管理特性的后续里程碑提供。",
@@ -105,6 +182,20 @@ interface HealthState {
   error?: string;
 }
 
+interface CheckState {
+  phase: "idle" | "ready" | "error";
+  data?: RemeCheck;
+  error?: string;
+  /** The interpreter this result belongs to. */
+  forPath: string;
+}
+
+interface InstallState {
+  phase: "idle" | "running" | "done";
+  job?: InstallStatus;
+  error?: string;
+}
+
 function isLocalEndpoint(endpoint: string): boolean {
   try {
     const url = new URL(endpoint);
@@ -124,6 +215,20 @@ function parseDetection(value: unknown): PythonDetection {
   return value as unknown as PythonDetection;
 }
 
+function parseRemeCheck(value: unknown): RemeCheck {
+  if (typeof value !== "object" || value === null)
+    throw new Error("Invalid ReMe check response");
+  return value as unknown as RemeCheck;
+}
+
+function parseInstallStatus(value: unknown): InstallStatus | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  return typeof record.id === "string" && typeof record.phase === "string"
+    ? (value as unknown as InstallStatus)
+    : null;
+}
+
 function originLabel(t: EnvTranslator, origin: PythonOrigin): string {
   switch (origin.kind) {
     case "conda":
@@ -141,7 +246,15 @@ function originLabel(t: EnvTranslator, origin: PythonOrigin): string {
   }
 }
 
-/** Environment management panel: local service connection, Python, service. */
+function elapsedText(job: InstallStatus, now: number): string {
+  const started = Date.parse(job.startedAt);
+  if (!Number.isFinite(started) || now < started) return "";
+  const seconds = Math.floor((now - started) / 1000);
+  const minutes = Math.floor(seconds / 60);
+  return minutes > 0 ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
+}
+
+/** Environment management panel: connection, Python, dependency, service. */
 export function ReMeEnvironmentTab({
   scope,
   rpc,
@@ -160,9 +273,30 @@ export function ReMeEnvironmentTab({
     phase: "loading",
     endpoint: "",
   });
+  const [check, setCheck] = useState<CheckState>({
+    phase: "idle",
+    forPath: "",
+  });
+  const [install, setInstall] = useState<InstallState>({ phase: "idle" });
   const [detectTick, setDetectTick] = useState(0);
   const [healthTick, setHealthTick] = useState(0);
+  const [checkTick, setCheckTick] = useState(0);
   const [savingExe, setSavingExe] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [mirror, setMirror] = useState("");
+  const [now, setNow] = useState(0);
+
+  // Derived values must precede hook dependency arrays.
+  const detected = detection.phase === "ready" ? detection.data : undefined;
+  const selectedExe = value?.pythonPath ?? "";
+  const suggestedExe = detected?.suggested ?? "";
+  const selectedPath = selectedExe || suggestedExe;
+  const checking = Boolean(selectedPath) && check.forPath !== selectedPath;
+  const checkData = check.forPath === selectedPath ? check.data : undefined;
+  const checkError = check.forPath === selectedPath ? check.error : undefined;
+  const local = isLocalEndpoint(endpoint);
+  const healthCurrent =
+    health.phase !== "loading" && health.endpoint === endpoint;
 
   const loadDetection = useCallback(
     async (signal: AbortSignal, refresh: boolean) => {
@@ -170,7 +304,7 @@ export function ReMeEnvironmentTab({
         const result = await rpc.call(
           "/api",
           "remeEnv/python",
-          { args: { refresh } },
+          { args: { input: { refresh } } },
           signal,
         );
         if (!result.ok)
@@ -231,9 +365,140 @@ export function ReMeEnvironmentTab({
     healthTick,
   ]);
 
+  const ensureCheck = useCallback(
+    async (signal: AbortSignal, pythonPath: string) => {
+      if (!pythonPath) return;
+      try {
+        const result = await rpc.call(
+          "/api",
+          "remeEnv/checkReme",
+          { args: { input: { pythonPath } } },
+          signal,
+        );
+        if (!result.ok)
+          throw new Error(result.error.message || result.error.code);
+        setCheck((current) => ({
+          ...current,
+          phase: "ready",
+          data: parseRemeCheck(result.value),
+          error: undefined,
+          forPath: pythonPath,
+        }));
+      } catch (error) {
+        if (!signal.aborted)
+          setCheck((current) => ({
+            ...current,
+            phase: "error",
+            error: safeError(error),
+            forPath: pythonPath,
+          }));
+      }
+    },
+    [rpc],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void ensureCheck(controller.signal, selectedPath);
+    return () => controller.abort();
+  }, [ensureCheck, selectedPath, checkTick]);
+
+  const restoreInstall = useCallback(
+    async (signal: AbortSignal) => {
+      try {
+        const result = await rpc.call(
+          "/api",
+          "remeEnv/installStatus",
+          { args: {} },
+          signal,
+        );
+        if (!result.ok) return;
+        const status = parseInstallStatus(result.value);
+        if (status?.phase === "running")
+          setInstall((current) => ({
+            ...current,
+            phase: "running",
+            job: status,
+          }));
+      } catch {
+        // Restoring is best-effort; a later action reports real failures.
+      }
+    },
+    [rpc],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void restoreInstall(controller.signal);
+    return () => controller.abort();
+  }, [restoreInstall]);
+
+  useEffect(() => {
+    if (install.phase !== "running") return;
+    const controller = new AbortController();
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async (): Promise<void> => {
+      try {
+        const result = await rpc.call(
+          "/api",
+          "remeEnv/installStatus",
+          { args: {} },
+          controller.signal,
+        );
+        if (cancelled) return;
+        if (!result.ok) {
+          setInstall((current) => ({
+            ...current,
+            phase: "done",
+            error: result.error.message,
+          }));
+          return;
+        }
+        const status = parseInstallStatus(result.value);
+        if (!status) {
+          setInstall({ phase: "idle" });
+          return;
+        }
+        if (status.phase === "running") {
+          setInstall((current) => ({
+            ...current,
+            phase: "running",
+            job: status,
+          }));
+          timer = setTimeout(() => void poll(), 2000);
+          return;
+        }
+        setInstall((current) => ({ ...current, phase: "done", job: status }));
+        if (status.phase === "succeeded") {
+          setCheckTick((tick) => tick + 1);
+          setDetectTick((tick) => tick + 1);
+        }
+      } catch (error) {
+        if (cancelled) return;
+        setInstall((current) => ({
+          ...current,
+          phase: "done",
+          error: safeError(error),
+        }));
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (timer) clearTimeout(timer);
+    };
+  }, [install.phase, rpc]);
+
+  useEffect(() => {
+    if (install.phase !== "running") return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [install.phase]);
+
   if (snapshot.status === "unavailable") return null;
 
-  const detected = detection.phase === "ready" ? detection.data : undefined;
   const select = (env: PythonEnv): void => {
     if (!value || !snapshot.writable || savingExe) return;
     setSavingExe(env.exe);
@@ -246,10 +511,36 @@ export function ReMeEnvironmentTab({
       .finally(() => setSavingExe(""));
   };
 
-  const local = isLocalEndpoint(endpoint);
-  const selectedExe = value?.pythonPath ?? "";
-  const healthCurrent =
-    health.phase !== "loading" && health.endpoint === endpoint;
+  const startInstall = async (upgrade: boolean): Promise<void> => {
+    if (!selectedPath || install.phase === "running") return;
+    setConfirming(false);
+    try {
+      const result = await rpc.call("/api", "remeEnv/install", {
+        args: {
+          input: { pythonPath: selectedPath, upgrade, indexUrl: mirror },
+        },
+      });
+      if (!result.ok)
+        throw new Error(result.error.message || result.error.code);
+      const status = parseInstallStatus(result.value);
+      setInstall(
+        status ? { phase: "running", job: status } : { phase: "idle" },
+      );
+    } catch (error) {
+      setInstall({ phase: "done", error: safeError(error) });
+    }
+  };
+
+  const cancelInstall = async (): Promise<void> => {
+    const jobId = install.job?.id ?? "";
+    try {
+      await rpc.call("/api", "remeEnv/installCancel", {
+        args: { input: { jobId } },
+      });
+    } catch {
+      // Polling reflects the final phase either way.
+    }
+  };
 
   return (
     <div className="reme-env">
@@ -339,13 +630,13 @@ export function ReMeEnvironmentTab({
                   <label
                     key={env.exe}
                     className={`reme-env-python${
-                      selectedExe === env.exe ? " active" : ""
+                      selectedPath === env.exe ? " active" : ""
                     }`}
                   >
                     <input
                       type="radio"
                       name="reme-python-interpreter"
-                      checked={selectedExe === env.exe}
+                      checked={selectedPath === env.exe}
                       disabled={
                         !env.ok || savingExe !== "" || !snapshot.writable
                       }
@@ -354,14 +645,17 @@ export function ReMeEnvironmentTab({
                     <span className="reme-env-python-main">
                       <strong>
                         {`Python ${env.version || "?"}`}
-                        {selectedExe !== env.exe &&
+                        {selectedPath !== env.exe &&
                         env.exe === detected.suggested
                           ? ` · ${t("recommended")}`
                           : ""}
                       </strong>
-                      <small>{`${originLabel(t, env.origin)} · ${
-                        env.exe
-                      }`}</small>
+                      <small>
+                        {`${originLabel(t, env.origin)} · ${env.exe}`}
+                        {env.reme?.installed
+                          ? ` · reme ${env.reme.version}`
+                          : ""}
+                      </small>
                     </span>
                     <span
                       className={`reme-status-badge ${env.ok ? "ok" : "bad"}`}
@@ -382,9 +676,222 @@ export function ReMeEnvironmentTab({
           </section>
           <section className="reme-settings-section">
             <h4>{t("dependencyTitle")}</h4>
-            <p className="reme-settings-muted reme-env-upcoming">
-              {t("upcoming")}
-            </p>
+            <p className="reme-settings-muted">{t("dependencyHint")}</p>
+            <div className="reme-env-row">
+              <span className="reme-env-label">{t("interpreterLabel")}</span>
+              <code className="reme-env-endpoint">
+                {selectedPath || t("noInterpreter")}
+              </code>
+              <button
+                type="button"
+                className="reme-settings-button"
+                disabled={!selectedPath}
+                onClick={() => {
+                  setCheck((current) => ({ ...current, phase: "idle" }));
+                  setCheckTick((tick) => tick + 1);
+                }}
+              >
+                {t("recheck")}
+              </button>
+            </div>
+            {!selectedPath ? (
+              <p className="reme-settings-muted">
+                {t("selectInterpreterFirst")}
+              </p>
+            ) : checking ? (
+              <p className="reme-settings-muted">{t("checkingReme")}</p>
+            ) : null}
+            {checkError ? (
+              <p className="reme-settings-error">
+                {t("checkRemeFailed")}
+                {checkError ? `: ${checkError}` : ""}
+              </p>
+            ) : null}
+            {checkData ? (
+              <div className="reme-env-checks">
+                <div className="reme-env-check">
+                  <span>{t("remeLabel")}</span>
+                  {checkData.installed ? (
+                    <span
+                      className={`reme-status-badge ${
+                        checkData.versionOk ? "ok" : "progress"
+                      }`}
+                    >
+                      <i />
+                      {`reme-ai ${checkData.version}`}
+                      {checkData.versionOk
+                        ? ""
+                        : ` · ${t("upgradeRecommended")}`}
+                    </span>
+                  ) : (
+                    <span className="reme-status-badge bad">
+                      <i />
+                      {t("notInstalled")}
+                    </span>
+                  )}
+                </div>
+                <div className="reme-env-check">
+                  <span>{t("coreLabel")}</span>
+                  {checkData.installed ? (
+                    <span
+                      className={`reme-status-badge ${
+                        checkData.hasCore ? "ok" : "progress"
+                      }`}
+                    >
+                      <i />
+                      {checkData.hasCore ? t("coreOk") : t("coreMissing")}
+                    </span>
+                  ) : (
+                    <span className="reme-settings-muted">—</span>
+                  )}
+                </div>
+                <div className="reme-env-check">
+                  <span>{t("cliLabel")}</span>
+                  {checkData.installed ? (
+                    <span
+                      className={`reme-status-badge ${
+                        checkData.cliPath ? "ok" : "progress"
+                      }`}
+                    >
+                      <i />
+                      {checkData.cliPath || t("cliFallback")}
+                    </span>
+                  ) : (
+                    <span className="reme-settings-muted">—</span>
+                  )}
+                </div>
+              </div>
+            ) : null}
+            {checkData && install.phase !== "running" ? (
+              <div className="reme-env-actions">
+                <label className="reme-env-mirror">
+                  <span>{t("mirrorLabel")}</span>
+                  <select
+                    value={mirror}
+                    onChange={(event) => setMirror(event.target.value)}
+                  >
+                    <option value="">{t("mirrorDefault")}</option>
+                    <option value="https://pypi.org/simple">
+                      {t("mirrorPypi")}
+                    </option>
+                    <option value="https://pypi.tuna.tsinghua.edu.cn/simple">
+                      {t("mirrorTsinghua")}
+                    </option>
+                    <option value="https://mirrors.aliyun.com/pypi/simple">
+                      {t("mirrorAliyun")}
+                    </option>
+                  </select>
+                </label>
+                {confirming ? (
+                  <div className="reme-env-confirm">
+                    <p>
+                      {t("installConfirm").replace(
+                        "{path}",
+                        selectedPath || "",
+                      )}
+                    </p>
+                    <button
+                      type="button"
+                      className="reme-settings-save"
+                      onClick={() => void startInstall(!checkData.versionOk)}
+                    >
+                      {t("confirmInstall")}
+                    </button>
+                    <button
+                      type="button"
+                      className="reme-settings-discard"
+                      onClick={() => setConfirming(false)}
+                    >
+                      {t("cancel")}
+                    </button>
+                  </div>
+                ) : checkData.installed && checkData.versionOk ? (
+                  <button
+                    type="button"
+                    className="reme-settings-button"
+                    onClick={() => setConfirming(true)}
+                  >
+                    {t("reinstall")}
+                  </button>
+                ) : checkData.installed ? (
+                  <button
+                    type="button"
+                    className="reme-settings-save"
+                    onClick={() => setConfirming(true)}
+                  >
+                    {t("upgradeButton")}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="reme-settings-save"
+                    onClick={() => setConfirming(true)}
+                  >
+                    {t("installButton")}
+                  </button>
+                )}
+                <p className="reme-settings-muted reme-env-hint-inline">
+                  {t("condaHint")}
+                </p>
+              </div>
+            ) : null}
+            {install.phase === "running" && install.job ? (
+              <div className="reme-env-progress">
+                <div className="reme-env-row">
+                  <span className="reme-status-badge progress">
+                    <i />
+                    {t("installing")}
+                    {elapsedText(install.job, now || Date.now())
+                      ? ` · ${elapsedText(install.job, now || Date.now())}`
+                      : ""}
+                  </span>
+                  <button
+                    type="button"
+                    className="reme-settings-discard"
+                    onClick={() => void cancelInstall()}
+                  >
+                    {t("cancelInstall")}
+                  </button>
+                </div>
+                <pre className="reme-env-log">
+                  {install.job.logTail || t("waitingForOutput")}
+                </pre>
+              </div>
+            ) : null}
+            {install.phase === "done" ? (
+              <div className="reme-env-result">
+                {install.job?.phase === "succeeded" ? (
+                  <p className="reme-settings-success">
+                    {t("installSucceeded")}
+                  </p>
+                ) : null}
+                {install.job?.phase === "cancelled" ? (
+                  <p className="reme-settings-muted">{t("installCancelled")}</p>
+                ) : null}
+                {install.job?.phase === "failed" ? (
+                  <>
+                    <p className="reme-settings-error">{t("installFailed")}</p>
+                    {install.job.logTail ? (
+                      <pre className="reme-env-log">{install.job.logTail}</pre>
+                    ) : null}
+                    <p className="reme-settings-muted">{install.job.logPath}</p>
+                  </>
+                ) : null}
+                {install.error ? (
+                  <p className="reme-settings-error">{install.error}</p>
+                ) : null}
+                <button
+                  type="button"
+                  className="reme-settings-button"
+                  onClick={() => {
+                    setInstall({ phase: "idle" });
+                    setConfirming(false);
+                  }}
+                >
+                  {t("dismiss")}
+                </button>
+              </div>
+            ) : null}
           </section>
           <section className="reme-settings-section">
             <h4>{t("configTitle")}</h4>
