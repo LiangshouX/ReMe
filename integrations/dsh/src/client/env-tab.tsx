@@ -992,7 +992,8 @@ export function ReMeEnvironmentTab({
                 {detection.error ? `: ${detection.error}` : ""}
               </p>
             ) : null}
-            {detected && detected.envs.length === 0 ? (
+            {detection.phase === "error" ||
+            (detected && detected.envs.length === 0) ? (
               <div className="reme-env-hint">
                 <strong>{t("emptyTitle")}</strong>
                 <span>{t("emptyHint")}</span>

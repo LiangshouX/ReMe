@@ -31,7 +31,11 @@ export class ReMeEnvGateway extends TypertRemoteService {
   static inject = ["remeEnv"];
 
   constructor(ctx: Context) {
-    super(ctx, "remeEnv");
+    // The service key must differ from the manager registered as `remeEnv`:
+    // TypertRemoteService registers itself under this key, and two providers
+    // for one key fail plugin activation. The wire namespace stays `remeEnv`,
+    // which is the endpoint the client calls.
+    super(ctx, "remeEnvGateway", { namespace: "remeEnv" });
   }
 
   /** Detect local Python interpreters; cached briefly unless refreshed. */
