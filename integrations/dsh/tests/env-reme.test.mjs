@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import {
   checkReme,
@@ -180,7 +180,10 @@ test("tails a log with CRLF and progress carriage returns", (t) => {
 function fakeSpawner() {
   const children = [];
   const spawner = {
-    start() {
+    start(options) {
+      // The real spawner opens the job log before spawning, so pruning must see
+      // the new file too.
+      if (options?.logPath) writeFileSync(options.logPath, "");
       const child = {
         pid: 4000 + children.length,
         killed: false,
@@ -234,6 +237,19 @@ test("finds the reme CLI in a POSIX bin directory", () => {
     "/home/u/venv/bin/python",
   );
   assert.equal(cli, "/home/u/venv/bin/reme");
+});
+
+test("keeps exactly the documented number of install logs", (t) => {
+  const { jobs, directory } = makeJobs(t);
+  for (let index = 0; index < 24; index += 1)
+    writeFileSync(join(directory, `install-old-${index}.log`), "x");
+  const started = jobs.start({ pythonPath: "C:\\env\\python.exe" });
+  const remaining = readdirSync(directory).filter((name) =>
+    name.endsWith(".log"),
+  );
+  // The steady state is the documented count, not one more than it.
+  assert.equal(remaining.length, 20);
+  assert.ok(remaining.includes(basename(started.logPath)));
 });
 
 test("tracks a successful pip job through exit", (t) => {

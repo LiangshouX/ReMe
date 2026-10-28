@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { StatusRpc } from "../../client/status-page.js";
 import { safeError } from "../../endpoint.js";
-import type { ServiceStartResult, ServiceState } from "../types.js";
+import type {
+  HealthErrorCode,
+  ServiceStartResult,
+  ServiceState,
+} from "../types.js";
 import { fill, type EnvKey, type EnvTranslator } from "./locales.js";
 import { StatusBadge } from "./presentation.js";
 import {
@@ -26,6 +30,7 @@ const START_ERROR_KEYS: Record<string, EnvKey> = {
   conflict: "startErrorConflict",
   "other-endpoint-running": "startErrorOtherEndpointRunning",
   "previous-not-stopped": "startErrorPreviousNotStopped",
+  "unverified-record": "startErrorUnverifiedRecord",
   "no-python": "startErrorNoPython",
   "not-installed": "startErrorNotInstalled",
   "version-too-old": "startErrorVersionTooOld",
@@ -104,17 +109,35 @@ export function useService(
     logPath: "",
   });
   const startController = useRef<AbortController | undefined>(undefined);
+  /** True only while a start this tab requested is being polled. */
+  const startInFlight = useRef(false);
+  /** The endpoint the callbacks below belong to; stale answers are dropped. */
+  const endpointRef = useRef(endpoint);
+  /** Sequence of status answers; a slow one must not overwrite a newer phase. */
+  const statusSeq = useRef(0);
+
+  const applyState = useCallback((next: ServiceViewState) => {
+    // An answer that settles a start is newer than any status read that was
+    // already in flight, so that read is discarded when it lands.
+    statusSeq.current += 1;
+    setState(next);
+  }, []);
 
   // A new endpoint has no known phase yet; keeping the previous endpoint's
   // "running + old pid/version" on screen would mislabel the new one. A start
   // poll for the old endpoint must stop before it can paint that old data.
   useEffect(() => {
+    endpointRef.current = endpoint;
+    startInFlight.current = false;
     startController.current?.abort();
+    // Answers requested for the old endpoint are no longer relevant.
+    statusSeq.current += 1;
     // Resetting the view when the endpoint prop changes is intentional; the
     // hook has no key, so this is the reset path.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setState({ phase: "checking" });
     setStopError("");
+    setStopping(false);
   }, [endpoint]);
 
   useEffect(() => () => startController.current?.abort(), []);
@@ -122,6 +145,8 @@ export function useService(
   useEffect(() => {
     if (!local || !endpoint) return;
     const controller = new AbortController();
+    const request = statusSeq.current + 1;
+    statusSeq.current = request;
     void (async () => {
       try {
         const next = parseServiceState(
@@ -132,19 +157,21 @@ export function useService(
             controller.signal,
           ),
         );
-        if (controller.signal.aborted) return;
-        // Recheck must not be swallowed while a start is in flight: the
-        // response belongs to the endpoint on screen. `stopped` with a live pid
-        // is the Host's "launch still booting" signal.
+        if (controller.signal.aborted || request !== statusSeq.current) return;
+        // A start this tab requested maps "stopped with a live pid" (the Host's
+        // "launch still booting" signal) to `starting`; a plain status read
+        // keeps the Host's phase, so a leftover process never locks the card.
         setState({
           phase:
-            next.phase === "stopped" && next.pid !== undefined
+            next.phase === "stopped" &&
+            next.pid !== undefined &&
+            startInFlight.current
               ? "starting"
               : next.phase,
           data: next,
         });
       } catch (error) {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || request !== statusSeq.current) return;
         setState({ phase: "error", error: safeError(error) });
       }
     })();
@@ -158,6 +185,9 @@ export function useService(
     startController.current?.abort();
     const controller = new AbortController();
     startController.current = controller;
+    startInFlight.current = true;
+    // A status read requested before this click is older than the start.
+    statusSeq.current += 1;
     setState({ phase: "starting" });
     setStopError("");
     setLog({ open: false, lines: "", logPath: "" });
@@ -172,15 +202,45 @@ export function useService(
       );
       if (controller.signal.aborted) return;
       if (started.error) {
-        setState({ phase: "error", error: startErrorText(t, started) });
+        if (started.code === "conflict") {
+          // The Host refused because the port answered. Showing that as a
+          // conflict card (with Stop when it is ours) matches what the poll
+          // below would report, instead of an error whose Start just repeats.
+          try {
+            const status = parseServiceState(
+              await envCall(
+                rpc,
+                "serviceStatus",
+                { endpoint, authToken },
+                controller.signal,
+              ),
+            );
+            if (controller.signal.aborted) return;
+            if (status.phase === "conflict") {
+              applyState({ phase: "conflict", data: status });
+              return;
+            }
+          } catch {
+            // Fall back to the reported start error.
+          }
+        }
+        applyState({ phase: "error", error: startErrorText(t, started) });
         return;
       }
       const deadline = Date.now() + START_DEADLINE_MS;
+      let ownedConflict: ServiceState | undefined;
       for (;;) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
         if (controller.signal.aborted) return;
         if (Date.now() > deadline) {
-          setState({ phase: "error", error: t("startTimeout") });
+          // A service that holds the port but never turns healthy cannot be
+          // recovered by waiting; an *owned* one is still stoppable, so keep
+          // that way out instead of a dead-end timeout error.
+          applyState(
+            ownedConflict
+              ? { phase: "conflict", data: ownedConflict }
+              : { phase: "error", error: t("startTimeout") },
+          );
           return;
         }
         try {
@@ -194,46 +254,82 @@ export function useService(
           );
           if (controller.signal.aborted) return;
           if (status.phase === "running") {
-            setState({ phase: "running", data: status });
+            applyState({ phase: "running", data: status });
             return;
           }
           if (status.phase === "conflict") {
-            // Someone (possibly our own booting service) owns the port.
-            setState({ phase: "conflict", data: status });
+            if (status.managed) {
+              // Our own launch can hold the port before `/health_check`
+              // passes. Keep polling instead of offering Stop too early; if it
+              // never becomes healthy the deadline shows the conflict card.
+              ownedConflict = status;
+              continue;
+            }
+            applyState({ phase: "conflict", data: status });
             return;
           }
           if (status.phase === "stopped" && status.pid === undefined) {
             // The Host already dropped the start marker: the launch died before
             // it ever listened, so waiting out the 120 s deadline is wrong.
-            setState({ phase: "error", error: t("startFailedStopped") });
+            applyState({ phase: "error", error: t("startFailedStopped") });
             return;
           }
-          // stopped with a live pid: the process is still booting.
+          // stopped with a live pid: the process is still booting. Carry the
+          // pid so a launch that never becomes healthy can still be stopped.
+          if (status.pid !== undefined)
+            setState((current) =>
+              current.phase === "starting"
+                ? { phase: "starting", data: status }
+                : current,
+            );
         } catch {
           // Keep polling: a starting service answers once it is listening.
         }
       }
     } catch (error) {
       if (controller.signal.aborted) return;
-      setState({ phase: "error", error: safeError(error) });
+      applyState({ phase: "error", error: safeError(error) });
+    } finally {
+      if (startController.current === controller) {
+        startController.current = undefined;
+        startInFlight.current = false;
+      }
     }
-  }, [authToken, endpoint, pythonPath, rpc, state.phase, t, workspaceDir]);
+  }, [
+    applyState,
+    authToken,
+    endpoint,
+    pythonPath,
+    rpc,
+    state.phase,
+    t,
+    workspaceDir,
+  ]);
 
   const stop = useCallback(async () => {
     if (stopping) return;
+    const target = endpoint;
+    // A Stop during a start must cancel that poll, or its next tick would
+    // repaint the launch the user just cancelled.
+    startController.current?.abort();
+    startInFlight.current = false;
     setStopping(true);
     try {
       const result = parseServiceStop(
-        await envCall(rpc, "serviceStop", { endpoint }),
+        await envCall(rpc, "serviceStop", { endpoint: target }),
       );
+      if (endpointRef.current !== target) return;
       setStopError(result.stopped ? "" : stopReasonText(t, result));
       refresh();
     } catch (error) {
-      setState({ phase: "error", error: safeError(error) });
+      if (endpointRef.current !== target) return;
+      applyState({ phase: "error", error: safeError(error) });
     } finally {
-      setStopping(false);
+      // A result for the previous endpoint must not disable the new card; that
+      // endpoint's effect already reset the flag.
+      if (endpointRef.current === target) setStopping(false);
     }
-  }, [endpoint, refresh, rpc, stopping, t]);
+  }, [applyState, endpoint, refresh, rpc, stopping, t]);
 
   const viewLog = useCallback(async () => {
     try {
@@ -269,6 +365,8 @@ export interface ConnectionState {
   endpoint: string;
   version?: string;
   error?: string;
+  /** Stable Host reason, localized by the hero instead of showing `error`. */
+  code?: HealthErrorCode;
 }
 
 /**
@@ -305,7 +403,12 @@ export function useHealth(options: {
         setHealth(
           result.ok
             ? { phase: "ok", endpoint, version: result.version }
-            : { phase: "fail", endpoint, error: result.error },
+            : {
+                phase: "fail",
+                endpoint,
+                error: result.error,
+                ...(result.code === undefined ? {} : { code: result.code }),
+              },
         );
       } catch (error) {
         if (!controller.signal.aborted)
@@ -345,11 +448,21 @@ export function ServiceSection({
   const [confirming, setConfirming] = useState(false);
   // A conflict can still be our own unhealthy service (booting, wrong token);
   // offer the same Stop affordance instead of leaving the tab without a way
-  // out other than editing the record by hand.
+  // out other than editing the record by hand. `stopped`/`starting` with a
+  // live pid is a recorded launch that never became healthy: Stop is the only
+  // way to clear it, so it must be offered there too.
   const canStop =
     current &&
     (state.phase === "running" ||
-      (state.phase === "conflict" && state.data?.managed === true));
+      (state.phase === "conflict" && state.data?.managed === true) ||
+      ((state.phase === "stopped" || state.phase === "starting") &&
+        state.data?.pid !== undefined));
+  // Only a pid this plugin recorded can be stopped; a foreign running service
+  // has no managed flag and keeps the button disabled.
+  const canSignal =
+    state.data?.managed === true ||
+    ((state.phase === "stopped" || state.phase === "starting") &&
+      state.data?.pid !== undefined);
 
   return (
     <section className="reme-env-card">
@@ -388,6 +501,8 @@ export function ServiceSection({
                   : "serviceBadgeConflict",
               )}
             </StatusBadge>
+          ) : state.phase === "stopped" && state.data?.pid !== undefined ? (
+            <StatusBadge tone="progress">{t("serviceBadgeStale")}</StatusBadge>
           ) : (
             <StatusBadge tone="bad">{t("serviceBadgeStopped")}</StatusBadge>
           )}
@@ -422,10 +537,13 @@ export function ServiceSection({
             {state.data?.managed ? t("conflictManagedNote") : t("conflictNote")}
           </p>
         ) : null}
-        {state.phase === "error" && state.error ? (
-          <p className="reme-settings-error">
-            {`${t("serviceError")}: ${state.error}`}
-          </p>
+        {current &&
+        state.phase === "stopped" &&
+        state.data?.pid !== undefined ? (
+          <p className="reme-settings-muted">{t("staleNote")}</p>
+        ) : null}
+        {current && state.phase === "error" && state.error ? (
+          <p className="reme-settings-error">{state.error}</p>
         ) : null}
         {stopError ? (
           <p className="reme-settings-error" role="alert">
@@ -460,7 +578,7 @@ export function ServiceSection({
               <button
                 type="button"
                 className="reme-settings-button"
-                disabled={stopping || !state.data?.managed}
+                disabled={stopping || !canSignal}
                 onClick={() => setConfirming(true)}
               >
                 {t("stopService")}

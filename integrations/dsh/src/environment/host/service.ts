@@ -12,13 +12,17 @@ import { createConnection } from "node:net";
 import { basename, dirname } from "node:path";
 
 import { safeError } from "../../endpoint.js";
+import { serviceEndpointKey } from "../endpoint-key.js";
 import type {
+  HealthErrorCode,
   ServiceStartResult,
   ServiceState,
-  ServiceStopReasonCode,
+  ServiceStopResult,
 } from "../types.js";
 import { openAppendLog } from "./log.js";
 import { isWindowsPath } from "./paths.js";
+
+export { serviceEndpointKey } from "../endpoint-key.js";
 
 /**
  * The local ReMe service is a *detached* process: it outlives DSH, which is the
@@ -43,15 +47,8 @@ export interface ServiceHealth {
   version: string;
   /** Non-empty when the endpoint answered but not as a ReMe service. */
   error: string;
-}
-
-export interface ServiceStopResult {
-  stopped: boolean;
-  pid?: number;
-  /** Why an unmanaged or missing service was left alone. */
-  reason?: string;
-  /** Stable reason the client localizes; `reason` stays for diagnostics. */
-  code?: ServiceStopReasonCode;
+  /** Stable reason the client localizes instead of showing `error`. */
+  code?: HealthErrorCode;
 }
 
 export interface ServiceIO {
@@ -84,24 +81,8 @@ export function isValidPid(pid: unknown): pid is number {
 }
 
 /**
- * Canonical identity of an endpoint for service-record matching. Loopback
- * aliases and default ports compare equal, so saving `localhost:2333` does not
- * make the service this plugin started on `127.0.0.1:2333` look foreign.
+ * Only loopback HTTP endpoints may be managed as a local service.
  */
-export function serviceEndpointKey(endpoint: string): string {
-  try {
-    const url = new URL(endpoint.trim());
-    const hostname = url.hostname.toLowerCase();
-    const host = hostname === "localhost" ? "127.0.0.1" : hostname;
-    const port = url.port || (url.protocol === "https:" ? "443" : "80");
-    const path = url.pathname.replace(/\/+$/, "");
-    return `${url.protocol}//${host}:${port}${path}`;
-  } catch {
-    return endpoint.trim();
-  }
-}
-
-/** Only loopback HTTP endpoints may be managed as a local service. */
 export function parseLocalEndpoint(endpoint: string): {
   host: string;
   port: number;
@@ -296,10 +277,12 @@ function commandMatches(command: string, persisted: PersistedService): boolean {
   const marker = `workspace_dir=${normalizeCommandText(workspace, foldCase)}`;
   const index = text.indexOf(marker);
   if (index < 0) return false;
-  // Require a boundary so `C:\a` does not match another service using `C:\ab`.
-  // A backslash remains a boundary for the `\"` form older shells produce.
+  // Require an argument boundary. A path separator is *not* one: the record
+  // `C:\a` must not match a launch for `C:\a\b` (POSIX `/repo` vs `/repo/sub`).
+  // The `\"` form Windows shows for the wrapper is folded by
+  // `normalizeCommandText`, so the quote itself is the boundary there.
   const next = text[index + marker.length] ?? "";
-  if (next && !/[\s"',\]\\]/.test(next)) return false;
+  if (next && !/[\s"',\]]/.test(next)) return false;
   return new RegExp(`service\\.port=${port}(?!\\d)`).test(text);
 }
 
@@ -659,16 +642,27 @@ export function createServiceIO(): ServiceIO {
           metadata?: { health?: { version?: unknown } };
         };
         if (!response.ok)
-          return { ok: false, version: "", error: `HTTP ${response.status}` };
+          return {
+            ok: false,
+            version: "",
+            error: `HTTP ${response.status}`,
+            code: "http-status" as const,
+          };
         const health = body.metadata?.health;
         if (body.success === false)
-          return { ok: false, version: "", error: "ReMe reported an error" };
+          return {
+            ok: false,
+            version: "",
+            error: "ReMe reported an error",
+            code: "reme-error" as const,
+          };
         // A generic HTTP server answering 200 with `{}` is not ReMe.
         if (typeof health !== "object" || health === null)
           return {
             ok: false,
             version: "",
             error: "The endpoint did not answer with a ReMe health report",
+            code: "not-reme" as const,
           };
         const version = health.version;
         return {
@@ -677,7 +671,12 @@ export function createServiceIO(): ServiceIO {
           error: "",
         };
       } catch (error) {
-        return { ok: false, version: "", error: safeError(error) };
+        return {
+          ok: false,
+          version: "",
+          error: safeError(error),
+          code: "unreachable" as const,
+        };
       } finally {
         clearTimeout(timer);
       }
@@ -697,7 +696,7 @@ export function createServiceIO(): ServiceIO {
     },
     async spawnService({ exe, args, cwd, logPath, env }) {
       const fd = openAppendLog(logPath);
-      let child: ReturnType<typeof spawn>;
+      let child: ReturnType<typeof spawn> | undefined;
       try {
         child = spawn(exe, args, {
           shell: false,
@@ -707,36 +706,40 @@ export function createServiceIO(): ServiceIO {
           env,
           stdio: ["ignore", fd, fd],
         });
+        const started = child;
         await new Promise<void>((resolve, reject) => {
           // A spawn acknowledgement that never arrives must not block the
           // start queue (and therefore a queued Stop) forever.
           const timer = setTimeout(() => {
             try {
-              child.kill();
+              started.kill();
             } catch {
               // Already gone.
             }
             reject(new Error("spawn did not acknowledge within 10 s"));
           }, 10_000);
           timer.unref();
-          child.once("spawn", () => {
+          started.once("spawn", () => {
             clearTimeout(timer);
             resolve();
           });
-          child.once("error", (error: Error) => {
+          started.once("error", (error: Error) => {
             clearTimeout(timer);
             reject(error);
           });
         });
       } finally {
         // The child owns its inherited handle; the parent copy is no longer
-        // needed, and an unref'd child survives this Host exiting.
+        // needed. The listener and `unref()` must run on the timeout path too:
+        // otherwise a late acknowledgement keeps the child referenced and its
+        // `error` event unhandled, and the Host cannot exit.
         closeSync(fd);
+        if (child !== undefined) {
+          child.on("error", () => undefined);
+          child.unref();
+        }
       }
-      // A failed executable is reported here rather than as an unhandled
-      // `error` event that would exit the Host.
-      child.on("error", () => undefined);
-      child.unref();
+      if (child === undefined) throw new Error("spawn did not start");
       return { pid: child.pid };
     },
     killTree(pid, force = false) {

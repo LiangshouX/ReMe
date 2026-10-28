@@ -114,6 +114,13 @@ export interface LlmTestResult {
   error: string;
 }
 
+/** Stable reason a health probe failed, so the client can localize it. */
+export type HealthErrorCode =
+  | "http-status"
+  | "not-reme"
+  | "reme-error"
+  | "unreachable";
+
 /** Whether the configured endpoint answers, probed from the DSH Host. */
 export interface ConnectionHealth {
   endpoint: string;
@@ -121,6 +128,8 @@ export interface ConnectionHealth {
   version: string;
   /** Non-empty when the endpoint answered but not as a ReMe service. */
   error: string;
+  /** Stable reason; the client shows localized copy instead of `error`. */
+  code?: HealthErrorCode;
   checkedAt: string;
 }
 
@@ -141,6 +150,7 @@ export type ServiceStartErrorCode =
   | "conflict"
   | "other-endpoint-running"
   | "previous-not-stopped"
+  | "unverified-record"
   | "no-python"
   | "not-installed"
   | "version-too-old"
@@ -169,4 +179,17 @@ export interface ServiceStartResult {
 export interface ServiceLog {
   logPath: string;
   lines: string;
+}
+
+/**
+ * Outcome of one Stop request. It crosses the `remeEnv` boundary, so it lives
+ * here rather than beside the Host-only process adapter.
+ */
+export interface ServiceStopResult {
+  stopped: boolean;
+  pid?: number;
+  /** Why an unmanaged or missing service was left alone. */
+  reason?: string;
+  /** Stable reason the client localizes; `reason` stays for diagnostics. */
+  code?: ServiceStopReasonCode;
 }

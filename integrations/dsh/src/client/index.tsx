@@ -1,4 +1,11 @@
-import { useEffect, useReducer, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { SettingsFormModel } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { SettingsFieldState } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
@@ -289,21 +296,40 @@ function ReMeSettingsCard({
   envT,
   view,
 }: ReMeCardProps): JSX.Element | null {
-  const snapshot = useSyncExternalStore(
-    (listener) => scope.subscribe(listener),
-    () => scope.getSnapshot(),
+  const subscribe = useCallback(
+    (listener: () => void) => scope.subscribe(listener),
+    [scope],
   );
+  const getSnapshot = useCallback(() => scope.getSnapshot(), [scope]);
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot);
   // DSH's form model stages the drafts, marks the ones that are invalid and
   // writes every staged edit as one revision-fenced mutation, so this page owns
   // only its controls and the field specs behind them.
   const [model] = useState(
     () => new SettingsFormModel<ReMeSettings>(scope, SETTINGS_SPECS),
   );
+  const disposeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
   const [, publish] = useReducer((tick: number) => tick + 1, 0);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [tab, setTab] = useState<"memory" | "environment">("memory");
-  useEffect(() => () => model.dispose(), [model]);
+  useEffect(() => {
+    // React StrictMode mounts, cleans up and mounts again in development.
+    // Disposing the model immediately would hand the remounted card a dead
+    // one, so the cleanup is deferred and cancelled by the next mount.
+    if (disposeTimer.current !== undefined) {
+      clearTimeout(disposeTimer.current);
+      disposeTimer.current = undefined;
+    }
+    return () => {
+      disposeTimer.current = setTimeout(() => {
+        disposeTimer.current = undefined;
+        model.dispose();
+      }, 0);
+    };
+  }, [model]);
 
   if (view === "summary") return <>{t("description")}</>;
   if (snapshot.status === "unavailable") return null;
@@ -358,7 +384,9 @@ function ReMeSettingsCard({
             type="button"
             role="tab"
             id="reme-tab-memory"
-            aria-controls="reme-tabpanel-memory"
+            aria-controls={
+              tab === "memory" ? "reme-tabpanel-memory" : undefined
+            }
             aria-selected={tab === "memory"}
             className={tab === "memory" ? "active" : ""}
             onClick={() => setTab("memory")}
@@ -369,7 +397,9 @@ function ReMeSettingsCard({
             type="button"
             role="tab"
             id="reme-tab-environment"
-            aria-controls="reme-tabpanel-environment"
+            aria-controls={
+              tab === "environment" ? "reme-tabpanel-environment" : undefined
+            }
             aria-selected={tab === "environment"}
             className={tab === "environment" ? "active" : ""}
             onClick={() => setTab("environment")}

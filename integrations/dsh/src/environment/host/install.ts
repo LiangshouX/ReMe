@@ -3,7 +3,7 @@ import { closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 
 import type { InstallPhase, InstallRequest, InstallStatus } from "../types.js";
-import { openAppendLog, pruneInstallLogs } from "./log.js";
+import { INSTALL_LOG_KEEP, openAppendLog, pruneInstallLogs } from "./log.js";
 import { isAbsolutePath } from "./paths.js";
 
 export interface InstallChild {
@@ -212,7 +212,6 @@ export class InstallJobs {
       36,
     )}-${(this.sequence += 1).toString(36)}`;
     mkdirSync(this.options.logDir, { recursive: true });
-    pruneInstallLogs(this.options.logDir);
     const logPath = join(this.options.logDir, `${id}.log`);
     const child = this.options.spawner.start({
       exe: pythonPath,
@@ -231,6 +230,15 @@ export class InstallJobs {
     };
     this.jobs.set(id, job);
     this.latest = id;
+    // Prune once the new log exists, so the steady state really is `keep`
+    // files rather than one more than the documented number.
+    pruneInstallLogs(
+      this.options.logDir,
+      INSTALL_LOG_KEEP,
+      [...this.jobs.values()]
+        .filter((running) => running.phase === "running")
+        .map((running) => running.logPath),
+    );
     child.onExit((code) => this.finish(job, code));
     return this.snapshot(job);
   }

@@ -3,10 +3,11 @@ import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 
 import type { StatusRpc } from "../../client/status-page.js";
 import { safeError } from "../../endpoint.js";
-import type { RemeCheck } from "../types.js";
+import { serviceEndpointKey } from "../endpoint-key.js";
+import type { HealthErrorCode, RemeCheck } from "../types.js";
 import type { ReMeSettings } from "../../types.js";
 import { DependencySection, useDependency } from "./dependency.js";
-import { fill, type EnvTranslator } from "./locales.js";
+import { fill, type EnvKey, type EnvTranslator } from "./locales.js";
 import { StatusBadge, type Badge } from "./presentation.js";
 import { PythonSection, usePython, type PythonSelection } from "./python.js";
 import {
@@ -39,29 +40,6 @@ function isLocalEndpoint(endpoint: string): boolean {
   }
 }
 
-/**
- * Compare endpoints the way the Host does, so a default port or a trailing
- * slash cannot make the Host's answer look like it belongs to an older URL.
- */
-function endpointKey(endpoint: string): string {
-  try {
-    const url = new URL(endpoint);
-    const port = url.port || (url.protocol === "https:" ? "443" : "80");
-    // Match the Host's loopback alias rule so `localhost` and `127.0.0.1`
-    // answers compare equal.
-    const host =
-      url.hostname.toLowerCase() === "localhost"
-        ? "127.0.0.1"
-        : url.hostname.toLowerCase();
-    return `${url.protocol}//${host}:${port}${url.pathname.replace(
-      /\/+$/,
-      "",
-    )}`;
-  } catch {
-    return endpoint.trim();
-  }
-}
-
 function connectionBadge(
   t: EnvTranslator,
   connection: ConnectionState,
@@ -78,6 +56,23 @@ function connectionBadge(
       ),
     };
   return { tone: "bad", text: label(t("disconnected")) };
+}
+
+/** Host health failures carry a stable code; older Hosts fall back to `error`. */
+const HEALTH_ERROR_KEYS: Partial<Record<HealthErrorCode, EnvKey>> = {
+  "http-status": "healthErrorHttp",
+  "not-reme": "healthErrorNotReme",
+  "reme-error": "healthErrorReme",
+  unreachable: "healthErrorUnreachable",
+};
+
+function healthErrorText(
+  t: EnvTranslator,
+  connection: ConnectionState,
+): string {
+  if (connection.phase !== "fail") return "";
+  const key = connection.code ? HEALTH_ERROR_KEYS[connection.code] : undefined;
+  return key ? t(key) : connection.error ?? "";
 }
 
 function interpreterBadge(t: EnvTranslator, selection: PythonSelection): Badge {
@@ -126,10 +121,12 @@ export function ReMeEnvironmentTab({
   rpc,
   t,
 }: ReMeEnvironmentTabProps): JSX.Element | null {
-  const snapshot = useSyncExternalStore(
-    (listener) => scope.subscribe(listener),
-    () => scope.getSnapshot(),
+  const subscribe = useCallback(
+    (listener: () => void) => scope.subscribe(listener),
+    [scope],
   );
+  const getSnapshot = useCallback(() => scope.getSnapshot(), [scope]);
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot);
   const value = snapshot.value;
   const endpoint = value?.endpoint ?? "";
   const local = isLocalEndpoint(endpoint);
@@ -208,7 +205,8 @@ export function ReMeEnvironmentTab({
   // The Host names the endpoint its answer belongs to; comparing that with the
   // settings endpoint is what makes a stale answer fail the `current` test.
   const serviceEndpoint = service.state.data?.endpoint ?? endpoint;
-  const serviceCurrent = endpointKey(serviceEndpoint) === endpointKey(endpoint);
+  const serviceCurrent =
+    serviceEndpointKey(serviceEndpoint) === serviceEndpointKey(endpoint);
   const connection: ConnectionState = local
     ? service.state.phase === "running"
       ? {
@@ -229,7 +227,8 @@ export function ReMeEnvironmentTab({
 
   const current =
     connection.phase !== "loading" &&
-    endpointKey(connection.endpoint) === endpointKey(endpoint);
+    serviceEndpointKey(connection.endpoint) === serviceEndpointKey(endpoint);
+  const connectionError = healthErrorText(t, connection);
   const ready =
     current &&
     connection.phase === "ok" &&
@@ -306,9 +305,9 @@ export function ReMeEnvironmentTab({
           ) : null}
         </div>
       </section>
-      {current && connection.phase === "fail" && connection.error ? (
+      {current && connectionError ? (
         <p className="reme-settings-error reme-env-hero-error">
-          {connection.error}
+          {connectionError}
         </p>
       ) : null}
       {settingsErrorText ? (

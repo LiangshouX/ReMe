@@ -49,6 +49,8 @@ export const envEn = {
   reinstall: "Reinstall reme-ai[core]",
   installConfirm:
     "Installs into {path}. Packages are downloaded on first use and may take 5–20 minutes depending on the network; progress is shown below.",
+  reinstallConfirm:
+    "Reinstalls reme-ai[core] into {path} with --force-reinstall. Packages are downloaded again; progress is shown below.",
   confirmInstall: "Confirm install",
   cancel: "Cancel",
   installing: "Installing",
@@ -100,6 +102,7 @@ export const envEn = {
   serviceBadgeConflict: "Port occupied",
   serviceBadgeUnhealthy: "Not healthy",
   serviceBadgeStopped: "Stopped",
+  serviceBadgeStale: "Last launch not ready",
   serviceRunning: "Running",
   startService: "Start service",
   stopService: "Stop service",
@@ -113,6 +116,8 @@ export const envEn = {
     "A service for another endpoint is still running; stop it there first.",
   startErrorPreviousNotStopped:
     "The previous service could not be stopped; check the log.",
+  startErrorUnverifiedRecord:
+    "The recorded service identity could not be verified, so it was left untouched; stop it manually, then retry.",
   startErrorNoPython: "Select a Python interpreter first.",
   startErrorNotInstalled:
     "reme-ai is not installed in the selected interpreter.",
@@ -133,6 +138,15 @@ export const envEn = {
     "Another program occupies this port. Change the service URL port in Memory settings.",
   conflictManagedNote:
     "This plugin's service holds the port but is not reporting healthy. Stop it to recover.",
+  staleNote:
+    "A recorded launch is still running but never became healthy. Stop it, then start again.",
+  healthErrorHttp:
+    "The endpoint returned an HTTP error, not a ReMe health report.",
+  healthErrorNotReme:
+    "The endpoint answered, but not with a ReMe health report.",
+  healthErrorReme: "The service reported an error during the health check.",
+  healthErrorUnreachable:
+    "The endpoint could not be reached from this machine.",
   viewLogs: "View log",
   logEmpty: "The service log is empty.",
   autoStartLabel: "Start the service automatically with DSH",
@@ -224,6 +238,8 @@ export const envZh: typeof envEn = {
   reinstall: "重装 reme-ai[core]",
   installConfirm:
     "将安装到 {path}。首次使用需要下载依赖，视网络情况通常需要 5–20 分钟，进度见下方日志。",
+  reinstallConfirm:
+    "将使用 --force-reinstall 重新安装到 {path}，依赖会重新下载，进度见下方日志。",
   confirmInstall: "确认安装",
   cancel: "取消",
   installing: "正在安装",
@@ -272,6 +288,7 @@ export const envZh: typeof envEn = {
   serviceBadgeConflict: "端口被占用",
   serviceBadgeUnhealthy: "未就绪",
   serviceBadgeStopped: "已停止",
+  serviceBadgeStale: "上次启动未就绪",
   serviceRunning: "运行中",
   startService: "启动服务",
   stopService: "停止服务",
@@ -282,6 +299,8 @@ export const envZh: typeof envEn = {
   startErrorOtherEndpointRunning:
     "另一个服务地址的服务仍在运行，请先到那个地址停止它。",
   startErrorPreviousNotStopped: "上一次服务未能停止，请查看日志。",
+  startErrorUnverifiedRecord:
+    "无法验证记录中的进程身份，已保持其运行；请手动停止后重试。",
   startErrorNoPython: "请先选择一个 Python 解释器。",
   startErrorNotInstalled: "所选解释器尚未安装 reme-ai。",
   startErrorVersionTooOld: "已安装的 reme-ai 版本过低，请先升级。",
@@ -295,6 +314,11 @@ export const envZh: typeof envEn = {
   conflictNote: "端口被其他程序占用；请在『记忆设置』中修改服务地址的端口。",
   conflictManagedNote:
     "本插件的服务占用了端口但未通过健康检查；停止它后即可恢复。",
+  staleNote: "上次启动的进程仍在运行，但从未就绪；请停止它后重新启动。",
+  healthErrorHttp: "服务地址返回了 HTTP 错误，而不是 ReMe 健康报告。",
+  healthErrorNotReme: "服务地址有响应，但返回的不是 ReMe 健康报告。",
+  healthErrorReme: "服务在健康检查中报告了错误。",
+  healthErrorUnreachable: "无法从本机连接到该服务地址。",
   viewLogs: "查看日志",
   logEmpty: "服务日志为空。",
   autoStartLabel: "随 DSH 启动时自动拉起服务",

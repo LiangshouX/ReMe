@@ -253,6 +253,9 @@ export function DependencySection({
   const { checkData, checkError, checking, install, now } = dependency;
   const [confirming, setConfirming] = useState(false);
   const [mirror, setMirror] = useState("");
+  // The confirm copy follows the CTA: a Reinstall downloads again with
+  // `--force-reinstall`, so the first-install wording would be misleading.
+  const reinstall = checkData?.installed === true && checkData.versionOk;
 
   const badge = !checkData
     ? undefined
@@ -307,9 +310,13 @@ export function DependencySection({
           </p>
         ) : null}
         {checkData?.error ? (
-          <p className="reme-settings-error">
-            {`${t("checkRemeFailed")}: ${checkData.error}`}
-          </p>
+          <>
+            <p className="reme-settings-error">{t("checkRemeFailed")}</p>
+            <details className="reme-settings-details">
+              <summary>{t("errorsTitle")}</summary>
+              <pre>{checkData.error}</pre>
+            </details>
+          </>
         ) : null}
         {checkData ? (
           <div className="reme-env-metrics">
@@ -387,7 +394,11 @@ export function DependencySection({
             </label>
             {confirming ? (
               <div className="reme-env-confirm">
-                <p>{fill(t("installConfirm"), { path: pythonPath })}</p>
+                <p>
+                  {fill(t(reinstall ? "reinstallConfirm" : "installConfirm"), {
+                    path: pythonPath,
+                  })}
+                </p>
                 <button
                   type="button"
                   className="reme-settings-save"
@@ -395,8 +406,6 @@ export function DependencySection({
                     setConfirming(false);
                     // Fresh install: no upgrade. Outdated: upgrade. Current
                     // but suspect (Reinstall): force pip to reinstall.
-                    const reinstall =
-                      checkData.installed && checkData.versionOk;
                     // The mirror choice reaches pip as `--index-url`; without
                     // it the selector would be decorative.
                     void dependency.start(

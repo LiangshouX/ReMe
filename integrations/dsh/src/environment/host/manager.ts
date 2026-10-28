@@ -18,7 +18,7 @@ import {
   startService,
   stopService,
 } from "./service.js";
-import type { ServiceIO, ServiceStopResult } from "./service.js";
+import type { ServiceIO } from "./service.js";
 import {
   envSummary,
   mergeEnvFile,
@@ -39,6 +39,7 @@ import type {
   ServiceLog,
   ServiceStartResult,
   ServiceState,
+  ServiceStopResult,
 } from "../types.js";
 
 const DEFAULT_ENDPOINT = "http://127.0.0.1:2333";
@@ -177,6 +178,7 @@ export class ReMeEnvManager {
       ok: health.ok,
       version: health.version,
       error: health.error,
+      ...(health.code === undefined ? {} : { code: health.code }),
       checkedAt: new Date().toISOString(),
     };
   }
@@ -257,7 +259,10 @@ export class ReMeEnvManager {
   serviceLog(workspaceDir: string): ServiceLog {
     const dir = resolveWorkspaceDir(workspaceDir, homedir());
     const logPath = join(dir, "service.log");
-    return { logPath, lines: tailLog(logPath, 40) };
+    // Rotation moves the previous launch's crash output to `service.log.1`; if
+    // the current file is still empty, that backup is the only diagnostic.
+    const lines = tailLog(logPath, 40) || tailLog(`${logPath}.1`, 40);
+    return { logPath, lines };
   }
 
   /** DSH-startup best effort: start a stopped local service when configured. */
@@ -397,8 +402,9 @@ export class ReMeEnvManager {
     }
     // A record for a *different* endpoint that is still alive would be
     // overwritten by the new launch, leaving that endpoint unable to stop it.
-    // Only a provably owned process blocks the new start; an unprovable record
-    // is stale and is discarded, just like the same-endpoint case below.
+    // A provably owned or an unverifiable process blocks the new start; only a
+    // provably foreign record is discarded, just like the same-endpoint case
+    // below.
     const recorded = readServiceState(this.serviceStatePath);
     if (
       recorded &&
@@ -422,11 +428,25 @@ export class ReMeEnvManager {
           error: `A service for ${recorded.endpoint} is still running; stop it from that endpoint first`,
           code: "other-endpoint-running",
         };
+      // An unreadable image/command line is not proof the process is gone:
+      // dropping the record would orphan a live service this plugin can no
+      // longer stop. Keep it and report why the start is blocked.
+      if (other === "unknown")
+        return {
+          started: false,
+          alreadyRunning: false,
+          command: "",
+          logPath,
+          startedAt: now,
+          error:
+            "The recorded service identity could not be verified; leaving it untouched",
+          code: "unverified-record",
+        };
       removeServiceState(this.serviceStatePath);
     }
     // A previous launch that never became healthy may still be alive. Stop it
-    // when ownership is proven; when it cannot be proven, drop the stale record
-    // without killing anything so a recycled pid is never touched.
+    // when ownership is proven; an unprovable record is kept and reported,
+    // because dropping it would orphan a live process the tab cannot stop.
     if (current.pid !== undefined) {
       const ownership = await serviceOwnership(
         this.serviceIO,
@@ -451,6 +471,19 @@ export class ReMeEnvManager {
             }`,
             code: "previous-not-stopped",
           };
+      } else if (ownership === "unknown") {
+        // PowerShell/ps failed to describe a live process. Discarding the
+        // record here would orphan it: the tab could never stop or replace it.
+        return {
+          started: false,
+          alreadyRunning: false,
+          command: "",
+          logPath,
+          startedAt: now,
+          error:
+            "The recorded service identity could not be verified; leaving it untouched",
+          code: "unverified-record",
+        };
       } else {
         removeServiceState(this.serviceStatePath);
       }

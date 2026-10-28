@@ -9,6 +9,7 @@ import type {
   ServiceLog,
   ServiceStartResult,
   ServiceState,
+  ServiceStopResult,
 } from "../types.js";
 
 /** Methods the Host exposes on the `remeEnv` wire namespace. */
@@ -83,6 +84,17 @@ function optionalStringField(
   what: string,
 ): void {
   if (body[key] !== undefined && typeof body[key] !== "string") fail(what);
+}
+
+function optionalPidField(
+  body: Record<string, unknown>,
+  key: string,
+  what: string,
+): void {
+  const value = body[key];
+  if (value === undefined) return;
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 1)
+    fail(what);
 }
 
 function arrayField(
@@ -181,6 +193,7 @@ export function parseEnvSummary(value: unknown): EnvSummary {
     booleanField(entry, "secret", what);
     booleanField(entry, "set", what);
     stringField(entry, "masked", what);
+    stringField(entry, "value", what);
   }
   return value as unknown as EnvSummary;
 }
@@ -191,6 +204,7 @@ export function parseLlmResult(value: unknown): LlmTestResult {
   booleanField(body, "ok", what);
   if (typeof body.status !== "number" || typeof body.latencyMs !== "number")
     fail(what);
+  stringField(body, "error", what);
   return value as unknown as LlmTestResult;
 }
 
@@ -201,6 +215,7 @@ export function parseHealth(value: unknown): ConnectionHealth {
   stringField(body, "version", what);
   stringField(body, "error", what);
   stringField(body, "endpoint", what);
+  optionalStringField(body, "code", what);
   return value as unknown as ConnectionHealth;
 }
 
@@ -212,6 +227,9 @@ export function parseServiceState(value: unknown): ServiceState {
   booleanField(body, "managed", what);
   stringField(body, "endpoint", what);
   stringField(body, "logPath", what);
+  optionalPidField(body, "pid", what);
+  optionalStringField(body, "version", what);
+  optionalStringField(body, "startedAt", what);
   return value as unknown as ServiceState;
 }
 
@@ -225,23 +243,19 @@ export function parseServiceStart(value: unknown): ServiceStartResult {
   stringField(body, "startedAt", what);
   optionalStringField(body, "error", what);
   optionalStringField(body, "code", what);
+  optionalStringField(body, "version", what);
+  optionalPidField(body, "pid", what);
   return value as unknown as ServiceStartResult;
 }
 
-export interface ServiceStopView {
-  stopped: boolean;
-  pid?: number;
-  reason?: string;
-  code?: string;
-}
-
-export function parseServiceStop(value: unknown): ServiceStopView {
+export function parseServiceStop(value: unknown): ServiceStopResult {
   const what = "service stop";
   const body = record(value, what);
   booleanField(body, "stopped", what);
   optionalStringField(body, "reason", what);
   optionalStringField(body, "code", what);
-  return value as ServiceStopView;
+  optionalPidField(body, "pid", what);
+  return value as unknown as ServiceStopResult;
 }
 
 export function parseServiceLog(value: unknown): ServiceLog {

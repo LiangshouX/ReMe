@@ -266,10 +266,13 @@ test("a recycled pid that is no longer the service is not managed", async (t) =>
     false,
   );
   // Matching is boundary-aware: a longer workspace path or port is another
-  // launch, not this one.
+  // launch, not this one. A path separator is not a boundary either, so a
+  // record for `...\reme-x` never claims a service started in `...\reme-x\sub`.
   const state = readServiceState(statePath);
   for (const command of [
     `reme start workspace_dir=${state.workspaceDir}2 service.port=2334`,
+    `reme start workspace_dir=${state.workspaceDir}\\sub service.port=2334`,
+    `reme start workspace_dir=${state.workspaceDir}/sub service.port=2334`,
     `reme start workspace_dir=${state.workspaceDir} service.port=23340`,
   ]) {
     const { io: longer } = fakeIO({
@@ -465,10 +468,26 @@ test("real IO accepts only a ReMe health report", async (t) => {
   const good = await io.fetchHealth(reme, "");
   assert.equal(good.ok, true);
   assert.equal(good.version, "0.4.2.1");
+  assert.equal(good.code, undefined);
 
   const empty = await io.fetchHealth(generic, "");
   assert.equal(empty.ok, false);
   assert.match(empty.error, /ReMe health report/);
+  // The client localizes the code instead of showing this English sentence.
+  assert.equal(empty.code, "not-reme");
+
+  const failing = await listening((_request, response) => {
+    response.statusCode = 503;
+    response.end("{}");
+  }, t);
+  const httpError = await io.fetchHealth(failing, "");
+  assert.equal(httpError.code, "http-status");
+
+  const unhappy = await listening((_request, response) => {
+    response.end(JSON.stringify({ success: false }));
+  }, t);
+  const reported = await io.fetchHealth(unhappy, "");
+  assert.equal(reported.code, "reme-error");
 
   // The Authorization header is actually sent when a token is configured.
   let authorization = "";

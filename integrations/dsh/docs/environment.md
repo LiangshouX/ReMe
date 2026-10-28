@@ -120,18 +120,23 @@ processes it manages when the Host exits. The plugin owns a small service adapte
   **after** the OS acknowledged the spawn, so a missing interpreter leaves no state behind.
 - A service is reported as managed — and offered a **Stop** button — only when the record matches the endpoint on
   screen, the pid is still alive, its image is still a Python or `reme` executable, **and** its command line still
-  carries the recorded `workspace_dir` and `service.port`. The command line is what makes a recycled pid safe: an
-  image name alone cannot prove which launch a pid belongs to. A record for port 2333 never claims a service on
-  port 2444. When the evidence cannot be read, ownership stays unproven: the process is shown as foreign, Stop
-  refuses to touch it, and a later Start drops the stale record instead of being blocked forever.
+  carries the recorded `workspace_dir` and `service.port`. The command line rules out most recycled pids (a longer
+  workspace path or another port never matches), though it cannot tell a pid apart from a user who starts the exact
+  same command by hand. A record for port 2333 never claims a service on port 2444.
+- When the evidence cannot be read (localized `tasklist`/`ps`, missing permissions), ownership stays unproven. Start
+  and Stop both leave the process and the record alone: Stop refuses, and Start reports an error instead of dropping
+  the record. Discarding it would orphan a live service that the tab could never stop again. Verify the process
+  yourself, stop it, then retry — or remove `service.json` if it is really gone.
 - A service that occupies the port but fails the health check is reported as a conflict; if it is provably this
   plugin's service, the tab still offers **Stop**.
 - **Stop** tree-kills the recorded process (process group on POSIX, `taskkill /T /F` on Windows), waits for it to
   exit, escalates (POSIX: `SIGTERM` then `SIGKILL`; Windows: force `taskkill` again), and clears the record only
   after the pid is gone. A service started elsewhere stays untouched and is only observed.
+- A recorded launch that is still alive but never became healthy is shown as **Last launch not ready**, with Stop as
+  the way out; it is not shown as "Starting" unless a start from this tab is actually in flight.
 - **Start** is serialized: two requests cannot spawn two services, and a second request observes the launch
   already in flight. Before replacing a recorded launch that never became healthy, Start only kills it when
-  ownership is proven; otherwise it drops the record without touching the process.
+  ownership is proven; an unproven record is kept and reported, never silently dropped.
 - **Auto-start** (`autoStart`, off by default) pulls the service up when DSH starts, if it is not already running.
 
 Python probes and pip installs are bounded Host operations; the service is the only process that must outlive DSH.
@@ -164,9 +169,14 @@ the file is left unchanged.
 **The service reports “Port occupied”.** Something else listens on the endpoint. Change the port in the service
 URL (Memory settings) or stop the other program.
 
-**The service does not become healthy.** The Start action polls for 120 seconds and then reports a timeout. Use
-**View log** (`$DSH_HOME`-independent: the workspace `service.log`) for the startup trace — a missing `reme-ai`,
-an invalid `.env`, or a port conflict all appear there.
+**The service does not become healthy.** The Start action polls for 120 seconds. If the port is answered but
+`/health_check` never passes, the card switches to the conflict state so **Stop** stays available. Use **View log**
+(the workspace `service.log`) for the startup trace — a missing `reme-ai`, an invalid `.env`, or a port conflict all
+appear there.
+
+**The service shows “Last launch not ready”.** A launch recorded by the plugin is still alive but never answered
+`/health_check` (for example DSH closed while it was booting). Use **Stop** to clear it, then start again. If Stop
+reports that the identity cannot be verified, confirm the process yourself before ending it.
 
 **The service shows as foreign.** It was started outside the plugin, so it is observed but not managed. Stop it
 in its own terminal if you want the tab to manage the next launch.

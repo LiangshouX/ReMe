@@ -11,9 +11,9 @@ import type {
   ServiceLog,
   ServiceStartResult,
   ServiceState,
+  ServiceStopResult,
 } from "../types.js";
 import type { ReMeEnvManager } from "./manager.js";
-import type { ServiceStopResult } from "./service.js";
 
 declare module "@deepseek-ai/cordis" {
   interface Context {

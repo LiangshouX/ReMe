@@ -125,7 +125,9 @@ export function PythonSection({
   writable: boolean;
 }): JSX.Element {
   const { detection, suggested, selectedPath, saving } = selection;
-  const detected = detection.phase === "ready" ? detection.data : undefined;
+  // A refresh keeps the last detection data, so the list must keep rendering it
+  // instead of flashing "no usable Python" while the new probe is in flight.
+  const detected = detection.data;
   const envs = detected?.envs ?? [];
   const [listOpen, setListOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -176,7 +178,8 @@ export function PythonSection({
             {detection.error ? `: ${detection.error}` : ""}
           </p>
         ) : null}
-        {detection.phase === "error" || envs.length === 0 ? (
+        {detection.phase === "error" ||
+        (detection.phase === "ready" && envs.length === 0) ? (
           <div className="reme-env-hint">
             <strong>{t("emptyTitle")}</strong>
             <span>{t("emptyHint")}</span>

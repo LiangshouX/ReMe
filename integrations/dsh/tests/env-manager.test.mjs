@@ -160,7 +160,7 @@ test("stops a previous launch that never became healthy before replacing it", as
   assert.equal(calls.spawn.length, 1);
 });
 
-test("an unprovable previous record is discarded without killing it", async (t) => {
+test("an unprovable previous record blocks the start instead of orphaning it", async (t) => {
   const { manager, calls, directory, io } = managerIn(t);
   manager.serviceStatus = async (endpoint) => ({
     phase: "stopped",
@@ -179,17 +179,20 @@ test("an unprovable previous record is discarded without killing it", async (t) 
     startedAt: "2026-10-27T00:00:00.000Z",
   });
   // The process exists, but its command line cannot be read, so ownership is
-  // unproven: never kill it, just drop the stale record and start.
+  // unproven. Dropping the record would orphan it: it must stay, and the start
+  // must report why instead of spawning a second service.
   io.processCommandLine = async () => "";
   const result = await manager.serviceStart(
     "http://127.0.0.1:2334",
     "D:\\env\\python.exe",
     join(directory, "workspace"),
   );
-  assert.equal(result.started, true);
+  assert.equal(result.started, false);
+  assert.equal(result.code, "unverified-record");
   assert.deepEqual(calls.killTree, []);
-  assert.equal(calls.spawn.length, 1);
-  assert.equal(readServiceState(statePath)?.pid, 5001);
+  assert.equal(calls.spawn.length, 0);
+  // Once the evidence is readable again, the same record can be stopped.
+  assert.equal(readServiceState(statePath)?.pid, 6000);
 });
 
 test("refuses to overwrite a live record owned by another endpoint", async (t) => {
@@ -257,6 +260,15 @@ test("probes health from the Host and rejects a non-http endpoint", async (t) =>
   assert.equal(health.ok, false);
   assert.equal(typeof health.checkedAt, "string");
   await assert.rejects(() => manager.health("file:///etc/passwd"), /http/);
+});
+
+test("shows the rotated service log when the current one is empty", (t) => {
+  const { manager, directory } = managerIn(t);
+  writeFileSync(join(directory, "service.log"), "");
+  writeFileSync(join(directory, "service.log.1"), "Traceback: boom\n");
+  const log = manager.serviceLog(directory);
+  assert.equal(log.logPath, join(directory, "service.log"));
+  assert.match(log.lines, /boom/);
 });
 
 test("validates the merged .env, not just the submitted values", async (t) => {
