@@ -1186,6 +1186,9 @@ function diagnosticClient(settings: ReMeSettings): ReMeClient {
     endpoint: settings.endpoint,
     requestTimeoutMs: settings.requestTimeoutMs,
     backgroundTimeoutMs: settings.backgroundTimeoutMs,
+    // The memory runtime authenticates, so diagnostics must too; otherwise a
+    // gateway-protected service shows 401s that look like a broken workspace.
+    authToken: settings.authToken,
   });
 }
 

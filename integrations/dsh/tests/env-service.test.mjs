@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createServer } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   buildStartCommand,
+  createServiceIO,
   ownsService,
   parseLocalEndpoint,
   readServiceState,
@@ -18,7 +20,7 @@ import {
 const ENDPOINT = "http://127.0.0.1:2334";
 
 function fakeIO(overrides = {}) {
-  const calls = { killTree: [], spawn: [] };
+  const calls = { killTree: [], force: [], spawn: [] };
   const io = {
     fetchHealth: async () => ({ ok: false, version: "", error: "" }),
     portOpen: async () => false,
@@ -26,8 +28,9 @@ function fakeIO(overrides = {}) {
       calls.spawn.push(options);
       return { pid: 4321 };
     },
-    killTree(pid) {
+    killTree(pid, force = false) {
       calls.killTree.push(pid);
+      if (force) calls.force.push(pid);
     },
     probePid() {},
     processImage: async () => "python.exe",
@@ -56,7 +59,7 @@ function record(statePath, overrides = {}) {
   });
 }
 
-test("accepts only loopback endpoints and validates the port", () => {
+test("accepts only loopback HTTP endpoints and validates the port", () => {
   assert.deepEqual(parseLocalEndpoint("http://127.0.0.1:2334"), {
     host: "127.0.0.1",
     port: 2334,
@@ -68,6 +71,12 @@ test("accepts only loopback endpoints and validates the port", () => {
   assert.throws(() => parseLocalEndpoint("http://10.0.0.5:2333"));
   assert.throws(() => parseLocalEndpoint("not-a-url"));
   assert.throws(() => parseLocalEndpoint("http://127.0.0.1:0"));
+  // The plugin starts a plain HTTP service, so https on loopback can never be
+  // healthy; it must not be offered as manageable.
+  assert.throws(
+    () => parseLocalEndpoint("https://127.0.0.1:2333"),
+    /http:\/\//,
+  );
 });
 
 test("builds reme start with the workspace cwd contract", () => {
@@ -162,6 +171,21 @@ test("a service on another endpoint is not reported as managed", async (t) => {
   assert.equal(status.pid, undefined);
 });
 
+test("a loopback alias still identifies the service this plugin started", async (t) => {
+  const { directory, statePath } = tempState(t, "reme-alias-");
+  record(statePath, { endpoint: "http://localhost:2334/" });
+  const { io } = fakeIO({
+    fetchHealth: async () => ({ ok: true, version: "0.4.0.9", error: "" }),
+  });
+  const status = await serviceStatus(io, {
+    endpoint: ENDPOINT,
+    statePath,
+    logPath: join(directory, "service.log"),
+  });
+  assert.equal(status.managed, true);
+  assert.equal(status.pid, 777);
+});
+
 test("a recycled pid that is no longer the service is not managed", async (t) => {
   const { statePath } = tempState(t, "reme-pid-");
   record(statePath);
@@ -182,6 +206,35 @@ test("a recycled pid that is no longer the service is not managed", async (t) =>
     await ownsService(gone, readServiceState(statePath), ENDPOINT),
     false,
   );
+  // Ownership guards a destructive action: an image that cannot be read is
+  // not evidence that the pid is ours, and a prefix match would accept e.g.
+  // pycharm64.exe.
+  for (const image of ["", "   ", "pycharm64.exe", "python-config"]) {
+    const { io: unreadable } = fakeIO({ processImage: async () => image });
+    assert.equal(
+      await ownsService(unreadable, readServiceState(statePath), ENDPOINT),
+      false,
+      `image ${JSON.stringify(image)} must not be owned`,
+    );
+  }
+});
+
+test("a dead record is cleared instead of reporting a stale pid", async (t) => {
+  const { directory, statePath } = tempState(t, "reme-dead-");
+  record(statePath);
+  const { io } = fakeIO({
+    probePid() {
+      throw new Error("ESRCH");
+    },
+  });
+  const status = await serviceStatus(io, {
+    endpoint: ENDPOINT,
+    statePath,
+    logPath: join(directory, "service.log"),
+  });
+  assert.equal(status.phase, "stopped");
+  assert.equal(status.pid, undefined);
+  assert.equal(readServiceState(statePath), undefined);
 });
 
 test("starts detached with the GBK-safe environment and records state", async (t) => {
@@ -230,11 +283,24 @@ test("records nothing when the spawn fails", async (t) => {
   assert.equal(readServiceState(statePath), undefined);
 });
 
-test("stops the managed pid and clears the state file", async (t) => {
+test("stops the managed pid and clears the state file after it exits", async (t) => {
   const { directory, statePath } = tempState(t, "reme-stop-");
   record(statePath, { pid: 999, workspaceDir: directory });
   const { io, calls } = fakeIO();
-  const stopped = await stopService(io, { statePath, endpoint: ENDPOINT });
+  let running = true;
+  io.probePid = () => {
+    if (!running) throw new Error("ESRCH");
+  };
+  io.killTree = (pid) => {
+    calls.killTree.push(pid);
+    running = false;
+  };
+  const stopped = await stopService(io, {
+    statePath,
+    endpoint: ENDPOINT,
+    timeoutMs: 100,
+    pollMs: 5,
+  });
   assert.deepEqual(stopped, { stopped: true, pid: 999 });
   assert.deepEqual(calls.killTree, [999]);
   assert.equal(readServiceState(statePath), undefined);
@@ -242,6 +308,25 @@ test("stops the managed pid and clears the state file", async (t) => {
     stopped: false,
     reason: "No service started by this plugin",
   });
+});
+
+test("escalates to SIGKILL and keeps the record when the service never exits", async (t) => {
+  const { directory, statePath } = tempState(t, "reme-stubborn-");
+  record(statePath, { pid: 999, workspaceDir: directory });
+  const { io, calls } = fakeIO();
+  const stopped = await stopService(io, {
+    statePath,
+    endpoint: ENDPOINT,
+    timeoutMs: 10,
+    forceTimeoutMs: 10,
+    pollMs: 2,
+  });
+  assert.equal(stopped.stopped, false);
+  assert.match(stopped.reason, /did not exit/);
+  assert.deepEqual(calls.killTree, [999, 999]);
+  assert.deepEqual(calls.force, [999]);
+  // The pid survives in the record, so Stop can be tried again later.
+  assert.equal(readServiceState(statePath)?.pid, 999);
 });
 
 test("refuses to stop a service recorded for another endpoint", async (t) => {
@@ -253,4 +338,81 @@ test("refuses to stop a service recorded for another endpoint", async (t) => {
   assert.match(stopped.reason, /does not belong/);
   assert.deepEqual(calls.killTree, []);
   assert.ok(readServiceState(statePath), "the foreign record is left in place");
+});
+
+/* ------------------------------------------------------------------ */
+/* Real IO: the pieces the fake adapter above cannot vouch for.       */
+/* ------------------------------------------------------------------ */
+
+async function listening(handler, t) {
+  const server = createServer(handler);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  return `http://127.0.0.1:${address.port}`;
+}
+
+test("real IO accepts only a ReMe health report", async (t) => {
+  const reme = await listening((request, response) => {
+    response.setHeader("Content-Type", "application/json");
+    if (request.url === "/health_check")
+      response.end(
+        JSON.stringify({
+          success: true,
+          metadata: { health: { version: "0.4.2.1", healthy: true } },
+        }),
+      );
+    else response.end("{}");
+  }, t);
+  const generic = await listening((_request, response) => {
+    response.setHeader("Content-Type", "application/json");
+    response.end("{}");
+  }, t);
+
+  const io = createServiceIO();
+  const good = await io.fetchHealth(reme, "");
+  assert.equal(good.ok, true);
+  assert.equal(good.version, "0.4.2.1");
+
+  const empty = await io.fetchHealth(generic, "");
+  assert.equal(empty.ok, false);
+  assert.match(empty.error, /ReMe health report/);
+
+  // The Authorization header is actually sent when a token is configured.
+  let authorization = "";
+  const guarded = await listening((request, response) => {
+    authorization = String(request.headers.authorization ?? "");
+    response.end("{}");
+  }, t);
+  await io.fetchHealth(guarded, "secret-token");
+  assert.equal(authorization, "Bearer secret-token");
+});
+
+test("real IO spawns, identifies and stops a detached process", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "reme-real-service-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const io = createServiceIO();
+  const { pid } = await io.spawnService({
+    exe: process.execPath,
+    args: ["-e", "setInterval(() => {}, 1000)"],
+    cwd: directory,
+    logPath: join(directory, "service.log"),
+    env: process.env,
+  });
+  assert.ok(pid !== undefined && pid > 1);
+  assert.doesNotThrow(() => io.probePid(pid));
+  assert.doesNotMatch(await io.processImage(pid), /^$/);
+
+  io.killTree(pid);
+  const deadline = Date.now() + 5_000;
+  let running = true;
+  while (running && Date.now() < deadline) {
+    try {
+      io.probePid(pid);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    } catch {
+      running = false;
+    }
+  }
+  assert.equal(running, false, "the detached process must actually exit");
 });

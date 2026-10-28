@@ -144,10 +144,12 @@ export function useWorkspace(
   options: {
     workspaceDir: string;
     writable: boolean;
+    /** False for a remote endpoint, whose local steps are hidden. */
+    enabled?: boolean;
     onWorkspaceDir(dir: string): Promise<unknown>;
   },
 ): WorkspaceState {
-  const { workspaceDir, writable, onWorkspaceDir } = options;
+  const { workspaceDir, writable, enabled = true, onWorkspaceDir } = options;
   const [env, setEnv] = useState<EnvState>({ phase: "loading" });
   const [draft, setDraft] = useState<Draft>({ dir: "", values: {} });
   const [saving, setSaving] = useState(false);
@@ -158,12 +160,18 @@ export function useWorkspace(
   // Read by a save that resolves after a workspace switch, so the answer for
   // the previous workspace is dropped instead of shown against the new one.
   const latestDir = useRef(workspaceDir);
+  const llmController = useRef<AbortController | undefined>(undefined);
 
   useEffect(() => {
     latestDir.current = workspaceDir;
+    // A probe for the previous workspace must not land on the new one.
+    llmController.current?.abort();
   }, [workspaceDir]);
 
+  useEffect(() => () => llmController.current?.abort(), []);
+
   useEffect(() => {
+    if (!enabled) return;
     const controller = new AbortController();
     void (async () => {
       try {
@@ -173,6 +181,7 @@ export function useWorkspace(
           { workspaceDir },
           controller.signal,
         );
+        if (controller.signal.aborted) return;
         setEnv({
           phase: "ready",
           data: parseEnvSummary(value),
@@ -188,7 +197,7 @@ export function useWorkspace(
       }
     })();
     return () => controller.abort();
-  }, [rpc, workspaceDir, tick]);
+  }, [rpc, workspaceDir, tick, enabled]);
 
   // A workspace switch drops drafts typed for the previous workspace, so a key
   // typed for one workspace can never be written into another. The read is
@@ -262,13 +271,24 @@ export function useWorkspace(
   const testLlm = useCallback(
     async (pythonPath: string) => {
       if (!pythonPath || llmTest.phase === "running") return;
+      const dir = workspaceDir;
+      llmController.current?.abort();
+      const controller = new AbortController();
+      llmController.current = controller;
       setLlmTest({ phase: "running" });
       try {
         const data = parseLlmResult(
-          await envCall(rpc, "testLlm", { workspaceDir, pythonPath }),
+          await envCall(
+            rpc,
+            "testLlm",
+            { workspaceDir: dir, pythonPath },
+            controller.signal,
+          ),
         );
+        if (controller.signal.aborted || latestDir.current !== dir) return;
         setLlmTest({ phase: data.ok ? "ok" : "fail", result: data });
       } catch (error) {
+        if (controller.signal.aborted || latestDir.current !== dir) return;
         setLlmTest({
           phase: "fail",
           result: {
@@ -287,7 +307,10 @@ export function useWorkspace(
     if (!writable) return;
     const next = workspaceInput ?? workspaceDir;
     setWorkspaceInput(undefined);
-    await onWorkspaceDir(next.trim()).catch(() => undefined);
+    const saved = await onWorkspaceDir(next.trim()).catch(() => false);
+    // A rejected save is reported by the settings writer; do not reload the
+    // old directory as if the new one had been accepted.
+    if (saved === false) return;
     setTick((current) => current + 1);
   }, [onWorkspaceDir, workspaceDir, workspaceInput, writable]);
 

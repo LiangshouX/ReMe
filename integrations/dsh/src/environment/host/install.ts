@@ -1,14 +1,15 @@
 import { spawn } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 
 import type { InstallPhase, InstallRequest, InstallStatus } from "../types.js";
-import { pathOf } from "./paths.js";
+import { isAbsolutePath } from "./paths.js";
 
 export interface InstallChild {
   pid: number | undefined;
   onExit(callback: (code: number | null) => void): void;
-  kill(): void;
+  /** `force` escalates to SIGKILL on POSIX; Windows always force-kills. */
+  kill(force?: boolean): void;
 }
 
 export interface InstallSpawner {
@@ -33,18 +34,32 @@ export function pipArgs(request: InstallRequest): string[] {
   if (indexUrl) {
     if (!/^https?:\/\/\S+$/i.test(indexUrl))
       throw new TypeError("Package index must be an http(s) URL");
+    // Credentials embedded in the URL would be echoed in the job command, the
+    // install log and the browser; pip's own config is the safe place for them.
+    const parsed = new URL(indexUrl);
+    if (parsed.username || parsed.password)
+      throw new TypeError(
+        "Package index must not embed credentials; configure them in pip.conf",
+      );
     args.push("--index-url", indexUrl);
   }
   args.push("reme-ai[core]");
   return args;
 }
 
-/** Last `maxLines` non-empty lines of a log file, normalized to "\n". */
+/**
+ * Last `maxLines` non-empty lines of a log file, normalized to "\n". Only the
+ * tail is read: this runs on every 2 s poll and the log can grow for minutes.
+ */
 export function tailLog(path: string, maxLines = 30, maxBytes = 8192): string {
+  let fd: number | undefined;
   try {
-    const buffer = readFileSync(path);
+    fd = openSync(path, "r");
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, maxBytes);
+    const buffer = Buffer.alloc(length);
+    readSync(fd, buffer, 0, length, Math.max(0, size - length));
     const text = buffer
-      .subarray(Math.max(0, buffer.length - maxBytes))
       .toString("utf8")
       .replaceAll("\r\n", "\n")
       .replaceAll("\r", "\n");
@@ -55,6 +70,14 @@ export function tailLog(path: string, maxLines = 30, maxBytes = 8192): string {
       .join("\n");
   } catch {
     return "";
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Already closed.
+      }
+    }
   }
 }
 
@@ -70,6 +93,9 @@ export function createInstallSpawner(
         child = spawn(exe, args, {
           shell: false,
           windowsHide: true,
+          // POSIX: lead a process group so a cancel can stop pip's build
+          // backends too, not only pip itself.
+          detached: process.platform !== "win32",
           env: {
             ...base,
             PYTHONIOENCODING: "utf-8",
@@ -94,17 +120,30 @@ export function createInstallSpawner(
           child.on("close", finish);
           child.on("error", () => finish(null));
         },
-        kill() {
+        kill(force = false) {
           if (child.pid !== undefined && process.platform === "win32") {
             // Tree-kill: pip's build backends are child processes.
-            spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
-              windowsHide: true,
-              stdio: "ignore",
-            });
+            const killer = spawn(
+              "taskkill",
+              ["/PID", String(child.pid), "/T", "/F"],
+              { windowsHide: true, stdio: "ignore" },
+            );
+            // Without this listener an async spawn failure would exit the Host.
+            killer.on("error", () => undefined);
+            killer.unref();
             return;
           }
+          const signal = force ? "SIGKILL" : "SIGTERM";
+          // The install process leads its own group on POSIX, so pip's build
+          // backends receive the signal as well.
           try {
-            child.kill("SIGTERM");
+            if (child.pid !== undefined) process.kill(-child.pid, signal);
+            return;
+          } catch {
+            // Not a group leader (e.g. spawn failed); signal the process only.
+          }
+          try {
+            child.kill(signal);
           } catch {
             // Already gone.
           }
@@ -148,7 +187,7 @@ export class InstallJobs {
     const pythonPath = (request.pythonPath ?? "").trim();
     // The interpreter may be written for another platform than the host, so its
     // own flavor decides whether the path is absolute.
-    if (!pythonPath || !pathOf(pythonPath).isAbsolute(pythonPath))
+    if (!pythonPath || !isAbsolutePath(pythonPath))
       throw new TypeError(
         "Install requires an absolute Python interpreter path",
       );
@@ -199,8 +238,13 @@ export class InstallJobs {
     if (!job || job.phase !== "running" || job.cancelling) return false;
     job.cancelling = true;
     job.child.kill();
-    // A process that ignores the kill must not lock the interpreter forever.
-    job.cancelTimer = setTimeout(() => this.finish(job, null), 15_000);
+    // A process that ignores the graceful kill must not keep the interpreter
+    // locked, so escalate before the last-resort fallback settles the job.
+    job.cancelTimer = setTimeout(() => {
+      job.child.kill(true);
+      job.cancelTimer = setTimeout(() => this.finish(job, null), 15_000);
+      job.cancelTimer.unref();
+    }, 5_000);
     job.cancelTimer.unref();
     return true;
   }

@@ -1,7 +1,7 @@
 import { win32 } from "node:path";
 
 import type { RemeCheck, RemeProbe } from "../types.js";
-import { pathOf } from "./paths.js";
+import { isAbsolutePath, pathOf } from "./paths.js";
 import type { RunCommand } from "./runner.js";
 
 /** Minimum reme-ai version this DSH integration is tested against. */
@@ -54,15 +54,25 @@ export async function probeReme(
       timeoutMs: 10_000,
     });
     if (result.error || result.code !== 0)
-      return { installed: false, version: "", versionOk: false };
+      return {
+        installed: false,
+        version: "",
+        versionOk: false,
+        ...(result.error ? { error: result.error } : {}),
+      };
     const version = parseRemeVersion(result.stdout);
     return {
       installed: version !== "",
       version,
       versionOk: remeVersionAtLeast(version),
     };
-  } catch {
-    return { installed: false, version: "", versionOk: false };
+  } catch (error) {
+    return {
+      installed: false,
+      version: "",
+      versionOk: false,
+      error: String(error),
+    };
   }
 }
 
@@ -95,7 +105,7 @@ export async function checkReme(
   pythonPath: string,
 ): Promise<RemeCheck> {
   const path = pythonPath.trim();
-  if (!path || !pathOf(path).isAbsolute(path)) {
+  if (!path || !isAbsolutePath(path)) {
     return {
       installed: false,
       version: "",
@@ -112,7 +122,7 @@ export async function checkReme(
       versionOk: false,
       hasCore: false,
       cliPath: "",
-      error: "",
+      error: probe.error ?? "",
     };
   }
   let hasCore = false;

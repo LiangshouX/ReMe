@@ -53,10 +53,42 @@ export function createNodeRunner(
       }
       let stdout = "";
       let stderr = "";
+      let settled = false;
+      let timedOut = false;
+      const timers: ReturnType<typeof setTimeout>[] = [];
+      const settle = (result: RunResult): void => {
+        if (settled) return;
+        settled = true;
+        for (const timer of timers) clearTimeout(timer);
+        resolve(result);
+      };
+      const timeoutMs = options.timeoutMs ?? 10_000;
       const timer = setTimeout(() => {
+        // The caller must see an explicit error: an exit caused by our own
+        // timeout is not "the interpreter has no reme-ai".
+        timedOut = true;
         child.kill();
-      }, options.timeoutMs ?? 10_000);
+        // A child that ignores SIGTERM must not make the probe hang forever:
+        // force it and settle, rather than waiting for a close that may never
+        // arrive.
+        const grace = setTimeout(() => {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // Already exited.
+          }
+          settle({
+            code: null,
+            stdout,
+            stderr,
+            error: `Command timed out after ${timeoutMs} ms`,
+          });
+        }, 1_000);
+        grace.unref();
+        timers.push(grace);
+      }, timeoutMs);
       timer.unref();
+      timers.push(timer);
       child.stdout?.on("data", (chunk) => {
         stdout += String(chunk);
       });
@@ -64,12 +96,17 @@ export function createNodeRunner(
         stderr += String(chunk);
       });
       child.on("error", (error) => {
-        clearTimeout(timer);
-        resolve({ code: null, stdout, stderr, error: String(error) });
+        settle({ code: null, stdout, stderr, error: String(error) });
       });
       child.on("close", (code) => {
-        clearTimeout(timer);
-        resolve({ code, stdout, stderr });
+        settle({
+          code,
+          stdout,
+          stderr,
+          ...(timedOut
+            ? { error: `Command timed out after ${timeoutMs} ms` }
+            : {}),
+        });
       });
     });
 }

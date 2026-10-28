@@ -225,6 +225,24 @@ export function makeCondaRunner(
   };
 }
 
+/**
+ * Unix interpreters that a `which -a python3` can miss when the shell has a
+ * trimmed PATH: the system install, Homebrew on both Apple Silicon and Intel,
+ * and pyenv/local shims. Windows has `where` and the registry for this.
+ */
+function commonPythonPaths(io: DetectIO, windows: boolean): string[] {
+  if (windows) return [];
+  const path = pathOf(io.homedir);
+  return [
+    "/usr/bin/python3",
+    "/usr/bin/python",
+    "/usr/local/bin/python3",
+    "/opt/homebrew/bin/python3",
+    path.join(io.homedir, ".pyenv", "shims", "python3"),
+    path.join(io.homedir, ".local", "bin", "python3"),
+  ];
+}
+
 function commonCondaPaths(io: DetectIO, windows: boolean): string[] {
   const programData = io.env["ProgramData"] ?? "";
   const path = windows ? win32 : pathOf(io.homedir);
@@ -340,7 +358,11 @@ function classifyOrigin(
     };
   if ([...candidate.sources].some((source) => source.startsWith("registry")))
     return { kind: "python.org" };
-  if (candidate.sources.has("PATH") || candidate.sources.has("which"))
+  if (
+    candidate.sources.has("PATH") ||
+    candidate.sources.has("which") ||
+    candidate.sources.has("well-known")
+  )
     return { kind: "system" };
   return { kind: "unknown" };
 }
@@ -472,6 +494,10 @@ export async function detectPythonEnvs(io: DetectIO): Promise<PythonDetection> {
         if (isWindowsAppsAlias(exe)) continue;
         addCandidate(candidates, exe, windows ? "PATH" : "which", windows);
       }
+      // Well-known Unix install locations, independent of the Host PATH.
+      for (const exe of commonPythonPaths(io, windows))
+        if (io.exists(exe))
+          addCandidate(candidates, exe, "well-known", windows);
     })(),
     // conda: PATH first, then well-known install roots.
     (async () => {

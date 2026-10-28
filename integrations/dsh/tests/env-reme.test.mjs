@@ -148,6 +148,15 @@ test("composes pip arguments for install, upgrade and mirrors", () => {
   assert.throws(() =>
     pipArgs({ pythonPath: "C:\\env\\python.exe", indexUrl: "ftp://x" }),
   );
+  // Credentials would be echoed in the job command, the log and the browser.
+  assert.throws(
+    () =>
+      pipArgs({
+        pythonPath: "C:\\env\\python.exe",
+        indexUrl: "https://user:token@mirror.example/simple",
+      }),
+    /must not embed credentials/,
+  );
 });
 
 test("tails a log with CRLF and progress carriage returns", (t) => {
@@ -281,5 +290,8 @@ test("reuses the running job for the same interpreter and validates paths", (t) 
   const second = jobs.start({ pythonPath: "C:\\env\\python.exe" });
   assert.equal(first.id, second.id);
   assert.throws(() => jobs.start({ pythonPath: "relative\\python.exe" }));
+  // Root-relative Windows paths pass win32.isAbsolute but are not absolute in
+  // the sense the install needs (they resolve against the current drive).
+  assert.throws(() => jobs.start({ pythonPath: "\\python.exe" }));
   assert.equal(jobs.status("unknown-job"), null);
 });

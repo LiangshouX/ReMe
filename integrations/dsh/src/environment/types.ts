@@ -47,6 +47,8 @@ export interface RemeProbe {
   version: string;
   /** True when the version satisfies the minimum this integration targets. */
   versionOk: boolean;
+  /** Non-empty when the probe itself failed (spawn error, timeout). */
+  error?: string;
 }
 
 export interface RemeCheck extends RemeProbe {

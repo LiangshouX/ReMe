@@ -24,10 +24,12 @@
 
 ## Python 探测
 
-ReMe 需要 **Python 3.11 或更新版本**。标签页在 Host 上探测下列来源，只保留能回应 `--version` 的解释器：
+ReMe 需要 **Python 3.11 或更新版本**。标签页在 Host 上探测下列来源，只保留能通过验证片段（上报 `sys.executable`、
+版本号与 base prefix 的 `-c` 探测）的解释器：
 
 - Windows：PEP 514 注册表项（`HKLM`/`HKCU`）、`py` 启动器列表、`PATH`、`conda env list`。
-- macOS / Linux：`PATH`、`/usr/bin`、Homebrew 与 `pyenv` 常见路径、`conda env list`。
+- macOS / Linux：`PATH`（`which -a`）、常见的 `/usr/bin`、`/usr/local`、Homebrew（`/opt/homebrew`）、
+  `~/.pyenv/shims` 与 `~/.local/bin` 路径，以及 `conda env list`。
 
 `WindowsApps` 下的 Microsoft Store 占位符会被跳过，因为它们只是别名而不是解释器。装有 conda 时，命名环境会同时出现在
 `conda env list` 与环境列表中，conda 根目录单独上报。
@@ -75,6 +77,7 @@ ReMe 在服务启动时读取 workspace 目录下的 `.env`；标签页从不把
 - 清空非密钥字段并保存即表示**删除**该值。只有编辑过的字段会被写入，文件其余部分的注释、未知键与顺序保持不变。
 - 保存时会校验合并后的整份文件，而不只是本次输入：ReMe 0.4.0.x 会无条件实例化 embedding 组件，因此即使不使用向量检索
   `EMBEDDING_API_KEY` 也必须非空（`EMPTY` 是文档化的占位值）。重复出现的键会在每一处被改写，文件原有的换行风格也会保留。
+- 写入是原子且仅属主可读写的（POSIX 上为 0600）；旧文件会保留为 `.env.bak`，因此一次失败的保存不会丢掉其它键。
 - **测试 LLM 连接**在 workspace 内、用所选解释器发送一次只需 1 个 token 的 `chat/completions` 请求，并对 `401`/`403`
   （密钥）、`404`（模型名或 Base URL）与网络错误给出提示。
 - 草稿与输入它的 workspace 绑定：切换 workspace 会丢弃草稿，因此为某个 workspace 输入的密钥不会被保存到另一个。
@@ -95,9 +98,11 @@ ReMe 在服务启动时读取 workspace 目录下的 `.env`；标签页从不把
 - 启动在操作系统确认 spawn 之后才记录到 `$DSH_HOME/reme-memory/service.json`（pid、地址、workspace、命令行、启动时间），
   所以解释器缺失时不会留下残留状态。
 - 只有记录与当前地址一致、pid 仍存活、且进程映像仍是 Python 或 `reme` 时，服务才被判定为“由本插件托管”并给出**停止**按钮。
-  2333 端口上的记录绝不会声称管理 2444 端口上的服务，被复用的 pid 也不会被误认。
-- **停止**会树杀记录的进程（Windows 上为 `taskkill /T /F`）并清除记录。别处启动的服务不受影响，只会被观察。
-- **启动**是串行化的：两个请求不会拉起两个服务，第二个会看到第一个的启动结果。
+  2333 端口上的记录绝不会声称管理 2444 端口上的服务，被复用的 pid 也不会被误认。读不到进程映像时按失败关闭处理：
+  显示为外部进程，不给出停止按钮。
+- **停止**会树杀记录的进程（POSIX 上按进程组、Windows 上为 `taskkill /T /F`），等待其退出，忽略优雅信号时升级为
+  `SIGKILL`，并**在 pid 真正消失之后**才清除记录。别处启动的服务不受影响，只会被观察。
+- **启动**是串行化的：两个请求不会拉起两个服务；启动仍在进行时到达的请求会被告知，而不是假装正在启动。
 - **自动启动**（`autoStart`，默认关闭）会在 DSH 启动时把尚未运行的服务拉起。
 
 Python 探测与 pip 安装都是有界的 Host 操作；服务是唯一被刻意分离出去的进程。
@@ -109,7 +114,7 @@ Python 探测与 pip 安装都是有界的 Host 操作；服务是唯一被刻�
 | DSH         | `0.1.7-rc.2`、`0.2.0-rc.2`、`0.2.1-alpha.2`、`0.2.1-alpha.4`、`0.2.1-rc.2`、`0.2.2-alpha.2`                                                         |
 | Node.js     | `^22.19.0` 或 `>=24.0.0`；当前 DSH 需要 Node 24.9 以上，兼容矩阵以 Node 24.16 验证                                                                  |
 | Windows     | 在 Windows 11 + Miniconda 上实测：注册表/PATH/conda 探测、`tasklist`/`taskkill` 身份校验与停止、`PYTHONUTF8`/`PYTHONIOENCODING` 保证 pip 输出不乱码 |
-| macOS/Linux | 探测、分离启动与 `SIGTERM` 停止均有单元测试覆盖；真机验证程度低于 Windows                                                                           |
+| macOS/Linux | 探测、分离启动、身份查询与停止均有运行真实子进程的单元测试覆盖；真机验证程度仍低于 Windows                                                          |
 
 ## 常见问题
 
@@ -126,7 +131,7 @@ Python 探测与 pip 安装都是有界的 Host 操作；服务是唯一被刻�
 
 **服务显示“端口被占用”。** 该端口被其它程序占用。请在服务地址（记忆设置）中换一个端口，或停止占用它的程序。
 
-**服务迟迟未就绪。** 启动会轮询 90 秒后报超时。用**查看日志**（workspace 下的 `service.log`）看启动过程——缺少 `reme-ai`、
+**服务迟迟未就绪。** 启动会轮询 120 秒后报超时。用**查看日志**（workspace 下的 `service.log`）看启动过程——缺少 `reme-ai`、
 `.env` 不合法、端口冲突都会体现在那里。
 
 **服务显示为外部启动。** 它不是由本插件启动的，因此只被观察而不被管理。若希望在标签页里管理，先在它自己的终端里停止，再从

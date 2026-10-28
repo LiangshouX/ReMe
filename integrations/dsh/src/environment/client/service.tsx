@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { StatusRpc } from "../../client/status-page.js";
 import { safeError } from "../../endpoint.js";
 import type { ServiceState } from "../types.js";
@@ -11,10 +11,15 @@ import {
   parseServiceLog,
   parseServiceStart,
   parseServiceState,
+  parseServiceStop,
 } from "./rpc.js";
 
-/** How long a detached start may take to answer `/health_check`. */
-const START_DEADLINE_MS = 90_000;
+/**
+ * How long a detached start may take to answer `/health_check`. Kept at the
+ * Host's start grace period, so the client never gives up while the Host still
+ * considers the launch in flight.
+ */
+const START_DEADLINE_MS = 120_000;
 
 export interface ServiceViewState {
   phase: "checking" | "running" | "starting" | "stopped" | "conflict" | "error";
@@ -31,6 +36,8 @@ export interface ServiceLogView {
 export interface ServiceControl {
   state: ServiceViewState;
   stopping: boolean;
+  /** Why the last Stop request left the service alone, if it did. */
+  stopError: string;
   start(): Promise<void>;
   stop(): Promise<void>;
   refresh(): void;
@@ -58,12 +65,22 @@ export function useService(
   const { t, endpoint, local, pythonPath, workspaceDir, authToken } = options;
   const [state, setState] = useState<ServiceViewState>({ phase: "checking" });
   const [stopping, setStopping] = useState(false);
+  const [stopError, setStopError] = useState("");
   const [tick, setTick] = useState(0);
   const [log, setLog] = useState<ServiceLogView>({
     open: false,
     lines: "",
     logPath: "",
   });
+  const startController = useRef<AbortController | undefined>(undefined);
+
+  // A new endpoint has no known phase yet; keeping the previous endpoint's
+  // "running + old pid/version" on screen would mislabel the new one.
+  useEffect(() => {
+    setState({ phase: "checking" });
+  }, [endpoint]);
+
+  useEffect(() => () => startController.current?.abort(), []);
 
   useEffect(() => {
     if (!local || !endpoint) return;
@@ -100,17 +117,22 @@ export function useService(
 
   const start = useCallback(async () => {
     if (!pythonPath || state.phase === "starting") return;
+    startController.current?.abort();
+    const controller = new AbortController();
+    startController.current = controller;
     setState({ phase: "starting" });
+    setStopError("");
     setLog({ open: false, lines: "", logPath: "" });
     try {
       const started = parseServiceStart(
-        await envCall(rpc, "serviceStart", {
-          endpoint,
-          pythonPath,
-          workspaceDir,
-          authToken,
-        }),
+        await envCall(
+          rpc,
+          "serviceStart",
+          { endpoint, pythonPath, workspaceDir, authToken },
+          controller.signal,
+        ),
       );
+      if (controller.signal.aborted) return;
       if (started.error) {
         setState({ phase: "error", error: started.error });
         return;
@@ -118,13 +140,19 @@ export function useService(
       const deadline = Date.now() + START_DEADLINE_MS;
       for (;;) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
+        if (controller.signal.aborted) return;
         if (Date.now() > deadline) {
           setState({ phase: "error", error: t("startTimeout") });
           return;
         }
         try {
           const status = parseServiceState(
-            await envCall(rpc, "serviceStatus", { endpoint, authToken }),
+            await envCall(
+              rpc,
+              "serviceStatus",
+              { endpoint, authToken },
+              controller.signal,
+            ),
           );
           if (status.phase === "running") {
             setState({ phase: "running", data: status });
@@ -135,6 +163,7 @@ export function useService(
         }
       }
     } catch (error) {
+      if (controller.signal.aborted) return;
       setState({ phase: "error", error: safeError(error) });
     }
   }, [authToken, endpoint, pythonPath, rpc, state.phase, t, workspaceDir]);
@@ -143,14 +172,17 @@ export function useService(
     if (stopping) return;
     setStopping(true);
     try {
-      await envCall(rpc, "serviceStop", { endpoint });
+      const result = parseServiceStop(
+        await envCall(rpc, "serviceStop", { endpoint }),
+      );
+      setStopError(result.stopped ? "" : result.reason || t("serviceError"));
       refresh();
     } catch (error) {
       setState({ phase: "error", error: safeError(error) });
     } finally {
       setStopping(false);
     }
-  }, [endpoint, refresh, rpc, stopping]);
+  }, [endpoint, refresh, rpc, stopping, t]);
 
   const viewLog = useCallback(async () => {
     try {
@@ -168,7 +200,17 @@ export function useService(
     [],
   );
 
-  return { state, stopping, start, stop, refresh, log, viewLog, dismissLog };
+  return {
+    state,
+    stopping,
+    stopError,
+    start,
+    stop,
+    refresh,
+    log,
+    viewLog,
+    dismissLog,
+  };
 }
 
 export interface ConnectionState {
@@ -245,7 +287,7 @@ export function ServiceSection({
   writable: boolean;
   onAutoStart(checked: boolean): void;
 }): JSX.Element {
-  const { state, stopping, log } = control;
+  const { state, stopping, stopError, log } = control;
   const [confirming, setConfirming] = useState(false);
 
   return (
@@ -311,6 +353,11 @@ export function ServiceSection({
             {`${t("serviceError")}: ${state.error}`}
           </p>
         ) : null}
+        {stopError ? (
+          <p className="reme-settings-error" role="alert">
+            {stopError}
+          </p>
+        ) : null}
         <div className="reme-env-cta">
           {state.phase === "running" ? (
             confirming ? (
@@ -368,6 +415,7 @@ export function ServiceSection({
             <input
               type="checkbox"
               checked={autoStart}
+              disabled={!writable}
               onChange={(event) => {
                 if (!writable) return;
                 onAutoStart(event.target.checked);

@@ -52,9 +52,15 @@ export class ReMeClient {
     sessionId: string,
     options: AutoMemoryOptions = {},
   ): Promise<ReMeResult> {
-    const config = {
-      ...this.configSource(),
-      ...(options.endpoint ? { endpoint: options.endpoint } : {}),
+    const base = this.configSource();
+    const endpoint = options.endpoint || base.endpoint;
+    // A recovered batch keeps the endpoint it was queued for. The token is
+    // scoped to the *configured* endpoint, so it must not ride along when the
+    // batch goes somewhere else.
+    const config: ReMeClientConfig = {
+      ...base,
+      endpoint,
+      ...(endpoint === base.endpoint ? {} : { authToken: "" }),
     };
     return this.request(
       "auto_memory",

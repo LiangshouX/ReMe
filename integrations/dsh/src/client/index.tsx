@@ -357,6 +357,8 @@ function ReMeSettingsCard({
           <button
             type="button"
             role="tab"
+            id="reme-tab-memory"
+            aria-controls="reme-tabpanel-memory"
             aria-selected={tab === "memory"}
             className={tab === "memory" ? "active" : ""}
             onClick={() => setTab("memory")}
@@ -366,6 +368,8 @@ function ReMeSettingsCard({
           <button
             type="button"
             role="tab"
+            id="reme-tab-environment"
+            aria-controls="reme-tabpanel-environment"
             aria-selected={tab === "environment"}
             className={tab === "environment" ? "active" : ""}
             onClick={() => setTab("environment")}
@@ -373,71 +377,79 @@ function ReMeSettingsCard({
             {t("tabEnvironment")}
           </button>
         </div>
-        {tab === "environment" ? (
-          rpc && envT ? (
-            <ReMeEnvironmentTab scope={scope} rpc={rpc} t={envT} />
-          ) : (
+        <div
+          role="tabpanel"
+          id={`reme-tabpanel-${tab}`}
+          aria-labelledby={`reme-tab-${tab}`}
+        >
+          {tab === "environment" ? (
+            rpc && envT ? (
+              <ReMeEnvironmentTab scope={scope} rpc={rpc} t={envT} />
+            ) : (
+              <p className="reme-settings-muted">{t("loading")}</p>
+            )
+          ) : value === undefined ? (
             <p className="reme-settings-muted">{t("loading")}</p>
-          )
-        ) : value === undefined ? (
-          <p className="reme-settings-muted">{t("loading")}</p>
-        ) : (
-          <>
-            {shell.dirty ? (
-              <p className="reme-settings-pending">{t("unsaved")}</p>
-            ) : null}
-            <fieldset
-              className="reme-settings-fields"
-              disabled={busy || !shell.writable}
-            >
-              <SettingsForm draft={field} edit={edit} t={t} />
-            </fieldset>
-            {!shell.writable ? (
-              <p className="reme-settings-error" role="status">
-                {t("readOnly")}
-              </p>
-            ) : null}
-            {blocked ? (
-              <p className="reme-settings-error" role="status">
-                {t("invalid")}
-              </p>
-            ) : null}
-            <div className="reme-settings-actions">
-              <button
-                type="button"
-                className="reme-settings-reset"
-                disabled={!shell.writable || busy}
-                onClick={reset}
+          ) : (
+            <>
+              {shell.dirty ? (
+                <p className="reme-settings-pending">{t("unsaved")}</p>
+              ) : null}
+              <fieldset
+                className="reme-settings-fields"
+                disabled={busy || !shell.writable}
               >
-                {t("reset")}
-              </button>
-              <span className="reme-settings-result" role="status">
-                {shell.failed ? (
-                  <span className="reme-settings-error">{t("saveFailed")}</span>
-                ) : null}
-                {saved && !shell.dirty ? (
-                  <span className="reme-settings-success">{t("saved")}</span>
-                ) : null}
-              </span>
-              <button
-                type="button"
-                className="reme-settings-discard"
-                disabled={!shell.dirty || busy}
-                onClick={discard}
-              >
-                {t("discard")}
-              </button>
-              <button
-                type="button"
-                className="reme-settings-save"
-                disabled={!shell.writable || !shell.dirty || blocked || busy}
-                onClick={() => void save()}
-              >
-                {t(busy ? "saving" : "save")}
-              </button>
-            </div>
-          </>
-        )}
+                <SettingsForm draft={field} edit={edit} t={t} />
+              </fieldset>
+              {!shell.writable ? (
+                <p className="reme-settings-error" role="status">
+                  {t("readOnly")}
+                </p>
+              ) : null}
+              {blocked ? (
+                <p className="reme-settings-error" role="status">
+                  {t("invalid")}
+                </p>
+              ) : null}
+              <div className="reme-settings-actions">
+                <button
+                  type="button"
+                  className="reme-settings-reset"
+                  disabled={!shell.writable || busy}
+                  onClick={reset}
+                >
+                  {t("reset")}
+                </button>
+                <span className="reme-settings-result" role="status">
+                  {shell.failed ? (
+                    <span className="reme-settings-error">
+                      {t("saveFailed")}
+                    </span>
+                  ) : null}
+                  {saved && !shell.dirty ? (
+                    <span className="reme-settings-success">{t("saved")}</span>
+                  ) : null}
+                </span>
+                <button
+                  type="button"
+                  className="reme-settings-discard"
+                  disabled={!shell.dirty || busy}
+                  onClick={discard}
+                >
+                  {t("discard")}
+                </button>
+                <button
+                  type="button"
+                  className="reme-settings-save"
+                  disabled={!shell.writable || !shell.dirty || blocked || busy}
+                  onClick={() => void save()}
+                >
+                  {t(busy ? "saving" : "save")}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

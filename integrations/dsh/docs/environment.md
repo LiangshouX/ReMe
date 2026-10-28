@@ -28,10 +28,11 @@ time and the two refresh actions.
 ## Python discovery
 
 ReMe needs **Python 3.11 or newer**. The tab probes these channels on the Host and keeps only interpreters that
-answered `--version`:
+answered its verification snippet (a `-c` probe reporting `sys.executable`, the version and the base prefix):
 
 - Windows: PEP 514 registry entries (`HKLM`/`HKCU`), the `py` launcher list, `PATH`, and `conda env list`.
-- macOS and Linux: `PATH`, `/usr/bin`, Homebrew and `pyenv` locations, and `conda env list`.
+- macOS and Linux: `PATH` (`which -a`), the well-known `/usr/bin`, `/usr/local`, Homebrew (`/opt/homebrew`),
+  `~/.pyenv/shims` and `~/.local/bin` locations, and `conda env list`.
 
 Microsoft Store placeholder links under `WindowsApps` are skipped, because they are shell aliases rather than
 interpreters. When conda is present, named environments are listed both under `conda env list` and as
@@ -91,6 +92,8 @@ DSH settings.
   component unconditionally, so `EMBEDDING_API_KEY` must be non-empty even without vector search (`EMPTY` is the
   documented placeholder). A duplicated key is rewritten in every position, and the file keeps its own line
   ending.
+- The write is atomic and owner-only (0600 on POSIX); the previous file is kept as `.env.bak`, so a failed save
+  cannot lose unrelated keys.
 - **Test LLM connection** runs a one-token `chat/completions` request from inside the workspace with the selected
   interpreter, and adds a hint for `401`/`403` (key), `404` (model or base URL) and network errors.
 - Drafts are bound to the workspace they were typed in: switching the workspace drops them, so a key typed for
@@ -115,10 +118,13 @@ processes it manages when the Host exits. The plugin owns a small service adapte
   **after** the OS acknowledged the spawn, so a missing interpreter leaves no state behind.
 - A service is reported as managed — and offered a **Stop** button — only when the record matches the endpoint on
   screen, the pid is still alive, and its image is still a Python or `reme` executable. A record for port 2333
-  never claims a service on port 2444, and a recycled pid is not mistaken for this service.
-- **Stop** tree-kills the recorded process (on Windows `taskkill /T /F`) and clears the record. A service started
-  elsewhere stays untouched and is only observed.
-- **Start** is serialized: two requests cannot spawn two services, and the second observes the first launch.
+  never claims a service on port 2444, and a recycled pid is not mistaken for this service. When the image cannot
+  be read, ownership fails closed: the process is shown as foreign rather than offered a Stop button.
+- **Stop** tree-kills the recorded process (process group on POSIX, `taskkill /T /F` on Windows), waits for it to
+  exit, escalates to `SIGKILL` if it ignores the graceful signal, and clears the record only after the pid is
+  gone. A service started elsewhere stays untouched and is only observed.
+- **Start** is serialized: two requests cannot spawn two services, and a request that arrives while a launch is
+  still in flight is told so instead of silently pretending to start.
 - **Auto-start** (`autoStart`, off by default) pulls the service up when DSH starts, if it is not already running.
 
 Python probes and pip installs are bounded Host operations; the service is the only intentionally detached
@@ -131,7 +137,7 @@ process.
 | DSH           | `0.1.7-rc.2`, `0.2.0-rc.2`, `0.2.1-alpha.2`, `0.2.1-alpha.4`, `0.2.1-rc.2`, `0.2.2-alpha.2`                                                                     |
 | Node.js       | `^22.19.0` or `>=24.0.0`; current DSH releases need Node 24.9 or newer, and the compatibility matrix is validated with Node 24.16                               |
 | Windows       | Tested on Windows 11 with Miniconda: registry/PATH/conda discovery, `tasklist`/`taskkill` for identity and stop, `PYTHONUTF8`/`PYTHONIOENCODING` for pip output |
-| macOS / Linux | Discovery, detached start and `SIGTERM` stop are covered by unit tests; documented but less exercised on real machines than Windows                             |
+| macOS / Linux | Discovery, detached spawn, identity lookup and stop are covered by unit tests that run a real child process; still less exercised on real machines than Windows |
 
 ## Troubleshooting
 
@@ -152,7 +158,7 @@ the file is left unchanged.
 **The service reports “Port occupied”.** Something else listens on the endpoint. Change the port in the service
 URL (Memory settings) or stop the other program.
 
-**The service does not become healthy.** The Start action polls for 90 seconds and then reports a timeout. Use
+**The service does not become healthy.** The Start action polls for 120 seconds and then reports a timeout. Use
 **View log** (`$DSH_HOME`-independent: the workspace `service.log`) for the startup trace — a missing `reme-ai`,
 an invalid `.env`, or a port conflict all appear there.
 

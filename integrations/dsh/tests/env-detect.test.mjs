@@ -607,6 +607,49 @@ test("detects Unix interpreters and merges paths that resolve together", async (
   assert.equal(named.version, "3.11.9");
 });
 
+test("probes well-known Unix locations beyond the Host PATH", async () => {
+  const homebrew = "/opt/homebrew/bin/python3";
+  const pyenv = "/Users/u/.pyenv/shims/python3";
+  const rules = [
+    {
+      match: (exe) => exe === "which",
+      result: { code: 1, stdout: "", stderr: "" },
+    },
+    verifyRule(homebrew, "3.12.4", "/opt/homebrew"),
+    // pyenv shims report the real interpreter they dispatch to.
+    {
+      match: (actual, args) =>
+        actual === pyenv &&
+        args[0] === VERIFY_ARG0 &&
+        String(args[1]).includes("import sys"),
+      result: {
+        code: 0,
+        stdout:
+          '{"exe":"/Users/u/.pyenv/versions/3.12.4/bin/python3","ver":"3.12.4","base":"/Users/u/.pyenv/versions/3.12.4"}\n',
+        stderr: "",
+      },
+    },
+    remeRule(homebrew, "0.4.1.11"),
+    remeRule(pyenv, null),
+    remeRule("/Users/u/.pyenv/versions/3.12.4/bin/python3", null),
+  ];
+  const detection = await detectPythonEnvs({
+    run: fakeRun(rules),
+    platform: "darwin",
+    env: {},
+    homedir: "/Users/u",
+    exists: (path) => path === homebrew || path === pyenv,
+  });
+  assert.deepEqual(
+    detection.envs.map((env) => env.exe).sort(),
+    [homebrew, "/Users/u/.pyenv/versions/3.12.4/bin/python3"].sort(),
+  );
+  assert.ok(
+    detection.envs.every((env) => env.origin.kind === "system"),
+    "well-known paths are classified as system installations",
+  );
+});
+
 test("collects conda failures without rejecting the whole detection", async () => {
   const { io, miniconda } = windowsFixture();
   io.run = async (exe, args) => {

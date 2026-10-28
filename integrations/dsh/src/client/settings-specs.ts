@@ -1,6 +1,10 @@
 import type { SettingsFieldSpec } from "@deepseek-ai/dsh-client-ui-primitives";
 
 import { validEndpoint } from "../endpoint.js";
+import { validTimezone } from "../scheduling.js";
+
+// Re-exported for callers that imported it from this module before it moved.
+export { validTimezone };
 
 /**
  * How each memory-settings field converts between its stored value and the text
@@ -84,16 +88,6 @@ export function timeFromCron(cron: string): string {
   ).padStart(2, "0")}`;
 }
 
-/** A timezone the browser's `Intl` accepts, which is what DSH validates with. */
-export function validTimezone(value: string): boolean {
-  try {
-    new Intl.DateTimeFormat("en", { timeZone: value.trim() }).format(0);
-    return value.trim().length > 0;
-  } catch {
-    return false;
-  }
-}
-
 export const SETTINGS_SPECS: SettingsFieldSpec[] = [
   {
     // The endpoint loses its trailing slashes on the way in, the way the
@@ -133,6 +127,8 @@ export const SETTINGS_SPECS: SettingsFieldSpec[] = [
     field: "timezone",
     format: (value) => (typeof value === "string" ? value : ""),
     parse: (text) =>
-      validTimezone(text) ? { kind: "set", value: text.trim() } : undefined,
+      validTimezone(text.trim())
+        ? { kind: "set", value: text.trim() }
+        : undefined,
   },
 ];

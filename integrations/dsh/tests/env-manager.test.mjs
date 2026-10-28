@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { ReMeEnvManager } from "../dist/environment/host/manager.js";
+import { writeServiceState } from "../dist/environment/host/service.js";
 
 /** A service adapter that records launches instead of starting processes. */
 function fakeServiceIO() {
-  const calls = { spawn: [] };
+  const calls = { killTree: [], spawn: [] };
   return {
     calls,
     io: {
@@ -49,7 +50,7 @@ function managerIn(t) {
     endpoint: endpoint || "http://127.0.0.1:2333",
     logPath: join(directory, "service.log"),
   });
-  return { manager, calls, directory };
+  return { manager, calls, directory, io };
 }
 
 test("serializes concurrent starts into one service launch", async (t) => {
@@ -67,6 +68,84 @@ test("serializes concurrent starts into one service launch", async (t) => {
   assert.equal(first.started, true);
   assert.equal(second.started, false);
   assert.equal(second.alreadyRunning, true);
+});
+
+test("a failed spawn can be retried immediately", async (t) => {
+  const { manager, calls, directory, io } = managerIn(t);
+  io.spawnService = async (options) => {
+    calls.spawn.push(options);
+    if (calls.spawn.length === 1) throw new Error("spawn ENOENT");
+    return { pid: 7000 };
+  };
+  const options = [
+    "http://127.0.0.1:2334",
+    "D:\\env\\python.exe",
+    join(directory, "workspace"),
+  ];
+  const first = await manager.serviceStart(...options);
+  assert.equal(first.started, false);
+  assert.match(first.error, /ENOENT/);
+
+  // The start marker was cleared with the failure; a retry must really spawn
+  // instead of being reported as "already starting".
+  const second = await manager.serviceStart(...options);
+  assert.equal(second.started, true);
+  assert.equal(calls.spawn.length, 2);
+});
+
+test("refuses to spawn while another process owns the port", async (t) => {
+  const { manager, calls, directory } = managerIn(t);
+  manager.serviceStatus = async (endpoint) => ({
+    phase: "conflict",
+    managed: false,
+    endpoint,
+    logPath: join(directory, "service.log"),
+  });
+  const result = await manager.serviceStart(
+    "http://127.0.0.1:2334",
+    "D:\\env\\python.exe",
+    join(directory, "workspace"),
+  );
+  assert.equal(result.started, false);
+  assert.match(result.error, /already listening/);
+  assert.equal(calls.spawn.length, 0);
+});
+
+test("stops a previous launch that never became healthy before replacing it", async (t) => {
+  const { manager, calls, directory, io } = managerIn(t);
+  manager.serviceStatus = async (endpoint) => ({
+    phase: "stopped",
+    managed: false,
+    endpoint,
+    // A live record for this endpoint means a launch that is still booting.
+    pid: 6000,
+    logPath: join(directory, "service.log"),
+  });
+  writeServiceState(join(directory, "reme-memory", "service.json"), {
+    pid: 6000,
+    endpoint: "http://127.0.0.1:2334",
+    workspaceDir: directory,
+    pythonPath: "D:\\env\\python.exe",
+    command: "reme start",
+    startedAt: "2026-10-27T00:00:00.000Z",
+  });
+  let running = true;
+  io.probePid = () => {
+    if (!running) throw new Error("ESRCH");
+  };
+  io.killTree = (pid) => {
+    calls.killTree.push(pid);
+    running = false;
+  };
+
+  const result = await manager.serviceStart(
+    "http://127.0.0.1:2334",
+    "D:\\env\\python.exe",
+    join(directory, "workspace"),
+  );
+  assert.equal(result.started, true);
+  assert.deepEqual(calls.killTree, [6000]);
+  assert.equal(calls.spawn.length, 1);
 });
 
 test("probes health from the Host and rejects a non-http endpoint", async (t) => {

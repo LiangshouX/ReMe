@@ -1,4 +1,13 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
 import { safeError } from "../../endpoint.js";
@@ -6,13 +15,13 @@ import type { EnvSummary, LlmTestResult } from "../types.js";
 import type { RunCommand } from "./runner.js";
 
 /** Keys the Environment tab manages; split for the two form groups. */
-export const LLM_KEYS = [
+const LLM_KEYS = [
   "LLM_BACKEND",
   "LLM_MODEL_NAME",
   "LLM_API_KEY",
   "LLM_BASE_URL",
 ] as const;
-export const EMBEDDING_KEYS = [
+const EMBEDDING_KEYS = [
   "EMBEDDING_BACKEND",
   "EMBEDDING_MODEL_NAME",
   "EMBEDDING_API_KEY",
@@ -138,10 +147,33 @@ export function validateEnvUpdate(values: Record<string, string>): void {
 /**
  * Write a fully merged `.env`. The caller merges and validates first, so the
  * file on disk is exactly what was validated.
+ *
+ * The write is atomic (same-directory temp file plus rename) and keeps the
+ * previous file as `.env.bak`: a crash or a full disk must not take unrelated
+ * keys such as `LLM_API_KEY` with it. New files are owner-only (0600) because
+ * they hold credentials.
  */
 export function writeEnvText(path: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, text, "utf8");
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, text, { encoding: "utf8", mode: 0o600 });
+  try {
+    if (existsSync(path)) {
+      const backup = `${path}.bak`;
+      copyFileSync(path, backup);
+      // The backup holds the same credentials, so it must not be more readable
+      // than the file it preserves.
+      try {
+        chmodSync(backup, 0o600);
+      } catch {
+        // Windows has no POSIX mode bits; the copy is still user-owned.
+      }
+    }
+    renameSync(temporary, path);
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw error;
+  }
 }
 
 /**

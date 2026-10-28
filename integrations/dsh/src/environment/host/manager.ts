@@ -2,9 +2,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { safeError } from "../../endpoint.js";
 import { detectPythonEnvs } from "./detect.js";
 import { createInstallSpawner, InstallJobs, tailLog } from "./install.js";
-import { checkReme, remeVersionAtLeast } from "./reme.js";
+import { checkReme, MINIMUM_REME, remeVersionAtLeast } from "./reme.js";
 import { createNodeRunner } from "./runner.js";
 import {
   createServiceIO,
@@ -189,8 +190,16 @@ export class ReMeEnvManager {
         "service.log",
       ),
     });
-    if (status.phase === "running" && this.starting?.endpoint === endpointValue)
-      this.starting = undefined;
+    if (this.starting?.endpoint === endpointValue) {
+      // Running is the happy end; stopped without a live pid means the launch
+      // died before it ever listened, so a retry must not be blocked by the
+      // grace period. A stopped status *with* a pid is a service still booting.
+      if (
+        status.phase === "running" ||
+        (status.phase === "stopped" && status.pid === undefined)
+      )
+        this.starting = undefined;
+    }
     return status;
   }
 
@@ -268,7 +277,15 @@ export class ReMeEnvManager {
     }
     if (url.protocol !== "http:" && url.protocol !== "https:")
       throw new TypeError("ReMe endpoint must be an http(s) URL");
-    return value;
+    if (url.username || url.password)
+      throw new TypeError("ReMe endpoint must not contain credentials");
+    if (url.search || url.hash)
+      throw new TypeError(
+        "ReMe endpoint must not contain a query string or fragment",
+      );
+    // The client appends job names to the endpoint, so it never keeps a
+    // trailing slash; normalising here is what makes records comparable.
+    return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, "")}`;
   }
 
   private async startLocked(
@@ -281,17 +298,30 @@ export class ReMeEnvManager {
     const dir = resolveWorkspaceDir(workspaceDir, homedir());
     const logPath = join(dir, "service.log");
     const now = new Date().toISOString();
-    if (
-      this.starting?.endpoint === endpointValue &&
-      Date.now() - this.starting.at < START_GRACE_MS
-    )
+    const starting = this.starting;
+    if (starting && Date.now() - starting.at < START_GRACE_MS) {
+      if (starting.endpoint === endpointValue)
+        return {
+          started: false,
+          alreadyRunning: true,
+          command: "",
+          logPath,
+          startedAt: now,
+          error: "The service is already starting for this endpoint",
+        };
+      // The service record is per install, not per endpoint; spawning a second
+      // endpoint's service now would overwrite the first one's record and
+      // orphan it.
       return {
         started: false,
-        alreadyRunning: true,
+        alreadyRunning: false,
         command: "",
         logPath,
         startedAt: now,
+        error: `A service start for ${starting.endpoint} is still in progress`,
       };
+    }
+    this.starting = undefined;
     const current = await this.serviceStatus(endpointValue, authToken);
     if (current.phase === "running")
       return {
@@ -302,6 +332,35 @@ export class ReMeEnvManager {
         startedAt: now,
         ...(current.version ? { version: current.version } : {}),
       };
+    if (current.phase === "conflict")
+      return {
+        started: false,
+        alreadyRunning: false,
+        command: "",
+        logPath,
+        startedAt: now,
+        error: "Another process is already listening on this endpoint",
+      };
+    // A previous launch that never became healthy may still be alive. Stop it
+    // before spawning a replacement, so it cannot be orphaned when the state
+    // record is overwritten.
+    if (current.pid !== undefined) {
+      const previous = await stopService(this.serviceIO, {
+        statePath: this.serviceStatePath,
+        endpoint: endpointValue,
+      });
+      if (!previous.stopped)
+        return {
+          started: false,
+          alreadyRunning: false,
+          command: "",
+          logPath,
+          startedAt: now,
+          error: `A previous launch could not be stopped: ${
+            previous.reason ?? "unknown reason"
+          }`,
+        };
+    }
     const path = pythonPath.trim();
     if (!path)
       return {
@@ -322,17 +381,45 @@ export class ReMeEnvManager {
         startedAt: now,
         error: "reme-ai is not installed in the selected interpreter",
       };
+    if (!check.versionOk)
+      return {
+        started: false,
+        alreadyRunning: false,
+        command: "",
+        logPath,
+        startedAt: now,
+        error: `reme-ai ${
+          check.version || "(unknown version)"
+        } is older than ${MINIMUM_REME}; upgrade it first`,
+      };
+    // Set before the spawn so a second request arriving while the service is
+    // booting observes the first launch instead of spawning another one. It is
+    // cleared again when the spawn fails, so a retry is possible immediately.
     this.starting = { endpoint: endpointValue, at: Date.now() };
-    return startService(this.serviceIO, {
-      endpoint: endpointValue,
-      workspaceDir: dir,
-      pythonPath: path,
-      cliPath: check.cliPath,
-      // 0.4.0.x has no jobs.<name>.enabled; only newer releases accept it.
-      disableDreamCron: remeVersionAtLeast(check.version, "0.4.1"),
-      statePath: this.serviceStatePath,
-      logPath,
-      env: this.env,
-    });
+    try {
+      const result = await startService(this.serviceIO, {
+        endpoint: endpointValue,
+        workspaceDir: dir,
+        pythonPath: path,
+        cliPath: check.cliPath,
+        // 0.4.0.x has no jobs.<name>.enabled; only newer releases accept it.
+        disableDreamCron: remeVersionAtLeast(check.version, "0.4.1"),
+        statePath: this.serviceStatePath,
+        logPath,
+        env: this.env,
+      });
+      if (!result.started) this.starting = undefined;
+      return result;
+    } catch (error) {
+      this.starting = undefined;
+      return {
+        started: false,
+        alreadyRunning: false,
+        command: "",
+        logPath,
+        startedAt: now,
+        error: `Could not start the ReMe service: ${safeError(error)}`,
+      };
+    }
   }
 }

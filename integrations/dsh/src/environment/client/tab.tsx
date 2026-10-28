@@ -2,6 +2,7 @@ import { useCallback, useState, useSyncExternalStore } from "react";
 import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 
 import type { StatusRpc } from "../../client/status-page.js";
+import { safeError } from "../../endpoint.js";
 import type { RemeCheck } from "../types.js";
 import type { ReMeSettings } from "../../types.js";
 import { DependencySection, useDependency } from "./dependency.js";
@@ -25,13 +26,35 @@ export interface ReMeEnvironmentTabProps {
   t: EnvTranslator;
 }
 
-/** Only a loopback endpoint can be managed as a local service. */
+/** Only a loopback HTTP endpoint can be managed as a local service. */
 function isLocalEndpoint(endpoint: string): boolean {
   try {
     const url = new URL(endpoint);
-    return ["127.0.0.1", "localhost", "[::1]", "::1"].includes(url.hostname);
+    return (
+      url.protocol === "http:" &&
+      ["127.0.0.1", "localhost", "[::1]", "::1"].includes(url.hostname)
+    );
   } catch {
     return false;
+  }
+}
+
+/**
+ * Compare endpoints the way the Host does, so a default port or a trailing
+ * slash cannot make the Host's answer look like it belongs to an older URL.
+ */
+function endpointKey(endpoint: string): string {
+  try {
+    const url = new URL(endpoint);
+    const port = url.port || (url.protocol === "https:" ? "443" : "80");
+    return `${
+      url.protocol
+    }//${url.hostname.toLowerCase()}:${port}${url.pathname.replace(
+      /\/+$/,
+      "",
+    )}`;
+  } catch {
+    return endpoint.trim();
   }
 }
 
@@ -109,24 +132,41 @@ export function ReMeEnvironmentTab({
   const workspaceDir = value?.remeWorkspaceDir ?? "";
   const authToken = value?.authToken ?? "";
   const [heroTick, setHeroTick] = useState(0);
+  // Settings writes are invisible to the sections otherwise: a rejected
+  // revision or a transport error would silently roll the control back.
+  const [settingsError, setSettingsError] = useState("");
 
   const writeSetting = useCallback(
-    (field: string, next: unknown): Promise<unknown> => {
-      if (!snapshot.writable) return Promise.resolve(false);
-      return scope
-        .mutate([{ op: "set", path: [field], value: next }], snapshot.revision)
-        .catch(() => undefined);
+    async (field: string, next: unknown): Promise<boolean> => {
+      if (!snapshot.writable) return false;
+      try {
+        const applied = await scope.mutate(
+          [{ op: "set", path: [field], value: next }],
+          snapshot.revision,
+        );
+        if (applied === false) {
+          setSettingsError(t("settingsWriteFailed"));
+          return false;
+        }
+        setSettingsError("");
+        return true;
+      } catch (error) {
+        setSettingsError(safeError(error));
+        return false;
+      }
     },
-    [scope, snapshot.revision, snapshot.writable],
+    [scope, snapshot.revision, snapshot.writable, t],
   );
 
   const python = usePython(rpc, {
     pythonPath: value?.pythonPath ?? "",
     writable: snapshot.writable,
+    enabled: local,
     onSelect: (exe) => writeSetting("pythonPath", exe),
   });
   const dependency = useDependency(rpc, {
     pythonPath: python.selectedPath,
+    enabled: local,
     onInstalled: () => {
       python.refresh();
     },
@@ -134,6 +174,7 @@ export function ReMeEnvironmentTab({
   const workspace = useWorkspace(rpc, {
     workspaceDir,
     writable: snapshot.writable,
+    enabled: local,
     onWorkspaceDir: (dir) => writeSetting("remeWorkspaceDir", dir),
   });
   const service = useService(rpc, {
@@ -154,18 +195,30 @@ export function ReMeEnvironmentTab({
     tick: heroTick,
     authToken,
   });
+  // The Host names the endpoint its answer belongs to; comparing that with the
+  // settings endpoint is what makes a stale answer fail the `current` test.
+  const serviceEndpoint = service.state.data?.endpoint ?? endpoint;
   const connection: ConnectionState = local
     ? service.state.phase === "running"
-      ? { phase: "ok", endpoint, version: service.state.data?.version ?? "" }
+      ? {
+          phase: "ok",
+          endpoint: serviceEndpoint,
+          version: service.state.data?.version ?? "",
+        }
       : service.state.phase === "checking" || service.state.phase === "starting"
-      ? { phase: "loading", endpoint }
-      : { phase: "fail", endpoint, error: service.state.error }
+      ? { phase: "loading", endpoint: serviceEndpoint }
+      : {
+          phase: "fail",
+          endpoint: serviceEndpoint,
+          error: service.state.error,
+        }
     : remote;
 
   if (snapshot.status === "unavailable") return null;
 
   const current =
-    connection.phase !== "loading" && connection.endpoint === endpoint;
+    connection.phase !== "loading" &&
+    endpointKey(connection.endpoint) === endpointKey(endpoint);
   const ready =
     current &&
     connection.phase === "ok" &&
@@ -239,6 +292,11 @@ export function ReMeEnvironmentTab({
       {current && connection.phase === "fail" && connection.error ? (
         <p className="reme-settings-error reme-env-hero-error">
           {connection.error}
+        </p>
+      ) : null}
+      {settingsError ? (
+        <p className="reme-settings-error reme-env-hero-error" role="alert">
+          {settingsError}
         </p>
       ) : null}
       {!local ? (

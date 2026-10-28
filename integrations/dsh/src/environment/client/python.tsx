@@ -40,10 +40,12 @@ export function usePython(
   options: {
     pythonPath: string;
     writable: boolean;
+    /** False for a remote endpoint, whose local steps are hidden. */
+    enabled?: boolean;
     onSelect(exe: string): Promise<unknown>;
   },
 ): PythonSelection {
-  const { pythonPath, writable, onSelect } = options;
+  const { pythonPath, writable, enabled = true, onSelect } = options;
   const [detection, setDetection] = useState<DetectionState>({
     phase: "loading",
   });
@@ -51,6 +53,7 @@ export function usePython(
   const [saving, setSaving] = useState("");
 
   useEffect(() => {
+    if (!enabled) return;
     const controller = new AbortController();
     void (async () => {
       try {
@@ -60,6 +63,7 @@ export function usePython(
           { refresh: tick > 0 },
           controller.signal,
         );
+        if (controller.signal.aborted) return;
         setDetection({ phase: "ready", data: parseDetection(value) });
       } catch (error) {
         if (!controller.signal.aborted)
@@ -67,7 +71,7 @@ export function usePython(
       }
     })();
     return () => controller.abort();
-  }, [rpc, tick]);
+  }, [rpc, tick, enabled]);
 
   const detected = detection.phase === "ready" ? detection.data : undefined;
   const suggested = detected?.suggested ?? "";
@@ -214,11 +218,6 @@ export function PythonSection({
               </code>
             </span>
           </div>
-        ) : null}
-        {!selectedPath && suggested ? (
-          <p className="reme-settings-muted reme-env-note">
-            {t("autoSelected")}
-          </p>
         ) : null}
         {others.length > 0 ? (
           <div className="reme-env-picker">

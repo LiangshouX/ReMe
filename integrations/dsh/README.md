@@ -110,24 +110,24 @@ If an earlier upgrade already renamed `settings.yaml` to `settings.yaml.imported
 
 ![ReMe Memory plugin configuration](./figures/reme-memory-settings.png)
 
-| UI meaning             | Configuration key      | Default                 | Description                                                                                         |
-| ---------------------- | ---------------------- | ----------------------- | --------------------------------------------------------------------------------------------------- |
-| Service URL            | `endpoint`             | `http://127.0.0.1:2333` | Absolute HTTP(S) URL without credentials, query, or fragment.                                       |
-| Auth token (optional)  | `authToken`            | empty                   | Bearer token for a self-hosted gateway; stored in clear text in the profile, trusted networks only. |
-| Guidance language      | `language`             | `en`                    | `en` or `zh`; controls guidance injected into new sessions.                                         |
-| Default search results | `searchLimit`          | `5`                     | Default `reme_search` result limit, from 1 to 50.                                                   |
-| Search timeout         | `requestTimeoutMs`     | `10000`                 | Search timeout in milliseconds, from 1,000 to 120,000.                                              |
-| Automatic memory       | `autoMemoryEnabled`    | `true`                  | Capture completed user/assistant turns for `auto_memory`.                                           |
-| Exclude subagents      | `rootAgentsOnly`       | `true`                  | Inject guidance and capture conversations only for root agents.                                     |
-| Submission interval    | `autoMemoryInterval`   | `5`                     | Submit after this many completed turns, from 1 to 1,000.                                            |
-| Memory consolidation   | `autoDreamEnabled`     | `true`                  | Run `auto_dream` on the daily schedule.                                                             |
-| Consolidation schedule | `dreamCron`            | `0 23 * * *`            | Five-field cron expression interpreted in `timezone`.                                               |
-| Consolidation guidance | `dreamHint`            | empty                   | Optional guidance passed to `auto_dream`.                                                           |
-| Workspace timezone     | `timezone`             | `Asia/Shanghai`         | IANA timezone used for batching and scheduling.                                                     |
-| Background timeout     | `backgroundTimeoutMs`  | `3600000`               | Timeout for `auto_memory` and `auto_dream`.                                                         |
-| Shutdown flush timeout | `shutdownTimeoutMs`    | `5000`                  | Budget for draining background work during shutdown.                                                |
-| Retry delay            | `autoMemoryRetryMs`    | `1000`                  | Initial retry delay; doubles after each failure.                                                    |
-| Maximum retry delay    | `autoMemoryRetryMaxMs` | `60000`                 | Upper bound for retry delay.                                                                        |
+| UI meaning             | Configuration key      | Default                 | Description                                                                                                                            |
+| ---------------------- | ---------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Service URL            | `endpoint`             | `http://127.0.0.1:2333` | Absolute HTTP(S) URL without credentials, query, or fragment.                                                                          |
+| Auth token (optional)  | `authToken`            | empty                   | Bearer token for a self-hosted gateway; set in the profile only (not shown in this form), stored in clear text, trusted networks only. |
+| Guidance language      | `language`             | `en`                    | `en` or `zh`; controls guidance injected into new sessions.                                                                            |
+| Default search results | `searchLimit`          | `5`                     | Default `reme_search` result limit, from 1 to 50.                                                                                      |
+| Search timeout         | `requestTimeoutMs`     | `10000`                 | Search timeout in milliseconds, from 1,000 to 120,000.                                                                                 |
+| Automatic memory       | `autoMemoryEnabled`    | `true`                  | Capture completed user/assistant turns for `auto_memory`.                                                                              |
+| Exclude subagents      | `rootAgentsOnly`       | `true`                  | Inject guidance and capture conversations only for root agents.                                                                        |
+| Submission interval    | `autoMemoryInterval`   | `5`                     | Submit after this many completed turns, from 1 to 1,000.                                                                               |
+| Memory consolidation   | `autoDreamEnabled`     | `true`                  | Run `auto_dream` on the daily schedule.                                                                                                |
+| Consolidation schedule | `dreamCron`            | `0 23 * * *`            | Five-field cron expression interpreted in `timezone`.                                                                                  |
+| Consolidation guidance | `dreamHint`            | empty                   | Optional guidance passed to `auto_dream`.                                                                                              |
+| Workspace timezone     | `timezone`             | `Asia/Shanghai`         | IANA timezone used for batching and scheduling.                                                                                        |
+| Background timeout     | `backgroundTimeoutMs`  | `3600000`               | Timeout for `auto_memory` and `auto_dream`.                                                                                            |
+| Shutdown flush timeout | `shutdownTimeoutMs`    | `5000`                  | Budget for draining background work during shutdown.                                                                                   |
+| Retry delay            | `autoMemoryRetryMs`    | `1000`                  | Initial retry delay; doubles after each failure.                                                                                       |
+| Maximum retry delay    | `autoMemoryRetryMaxMs` | `60000`                 | Upper bound for retry delay.                                                                                                           |
 
 Deployment configuration also supports `REME_URL`, or `REME_HOST` together with `REME_PORT`. The timer-only test option `dreamIntervalMs` is intentionally excluded from user settings.
 

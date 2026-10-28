@@ -1,6 +1,5 @@
 /** Copy for the Environment tab, registered under `reme.environment`. */
 export const envEn = {
-  connectionTitle: "Service connection",
   endpointLabel: "Service URL",
   checking: "Checking…",
   connected: "Connected",
@@ -19,7 +18,6 @@ export const envEn = {
     "Install Miniconda or any Python 3.11+, then refresh. Existing conda environments are detected automatically.",
   miniconda: "Miniconda download",
   recommended: "recommended",
-  okBadge: "OK",
   tooOld: "Needs 3.11+",
   originConda: "Conda ({name})",
   originPythonOrg: "python.org installer",
@@ -103,7 +101,7 @@ export const envEn = {
   serviceRunning: "Running",
   startService: "Start service",
   stopService: "Stop service",
-  startTimeout: "The service did not become healthy within 90 seconds",
+  startTimeout: "The service did not become healthy within 120 seconds",
   stopConfirm:
     "Stop the ReMe service? Automatic memory in flight may need a retry.",
   foreignNote:
@@ -115,6 +113,8 @@ export const envEn = {
   autoStartLabel: "Start the service automatically with DSH",
   managedNote: "Managed by this plugin · PID {pid}",
   serviceError: "Service operation failed",
+  settingsWriteFailed:
+    "The setting was not saved. The form may have changed in another window; retry.",
   configTitle: "ReMe parameters",
   controlTitle: "Service control",
   heroEyebrow: "ReMe local runtime",
@@ -131,8 +131,6 @@ export const envEn = {
   scannedAt: "Detected at {time}",
   currentInterpreter: "Current interpreter",
   notInDetection: "not detected",
-  autoSelected:
-    "The recommended interpreter is used until you pick another one.",
   savingSelection: "Saving…",
   changeInterpreter: "Change interpreter",
   collapseList: "Collapse list",
@@ -153,7 +151,6 @@ export const envEn = {
 };
 
 export const envZh: typeof envEn = {
-  connectionTitle: "服务连接",
   endpointLabel: "服务地址",
   checking: "正在检查…",
   connected: "已连接",
@@ -171,7 +168,6 @@ export const envZh: typeof envEn = {
     "可安装 Miniconda 或任意 Python 3.11+ 后点击“重新探测”；已有的 conda 环境会被自动识别。",
   miniconda: "下载 Miniconda",
   recommended: "推荐",
-  okBadge: "可用",
   tooOld: "需要 3.11+",
   originConda: "Conda（{name}）",
   originPythonOrg: "python.org 安装器",
@@ -252,7 +248,7 @@ export const envZh: typeof envEn = {
   serviceRunning: "运行中",
   startService: "启动服务",
   stopService: "停止服务",
-  startTimeout: "服务在 90 秒内未就绪",
+  startTimeout: "服务在 120 秒内未就绪",
   stopConfirm: "停止 ReMe 服务？进行中的自动记忆可能需要重试。",
   foreignNote: "该服务由 DSH 之外的方式启动，这里只显示状态、不由本插件管理。",
   conflictNote: "端口被其他程序占用；请在『记忆设置』中修改服务地址的端口。",
@@ -261,6 +257,7 @@ export const envZh: typeof envEn = {
   autoStartLabel: "随 DSH 启动时自动拉起服务",
   managedNote: "由本插件托管 · PID {pid}",
   serviceError: "服务操作失败",
+  settingsWriteFailed: "设置未保存；表单可能已在其他窗口更新，请重试。",
   configTitle: "ReMe 参数",
   controlTitle: "服务控制",
   heroEyebrow: "ReMe 本地运行时",
@@ -277,7 +274,6 @@ export const envZh: typeof envEn = {
   scannedAt: "探测于 {time}",
   currentInterpreter: "当前解释器",
   notInDetection: "不在探测结果中",
-  autoSelected: "当前使用推荐解释器；选择其他解释器后会写入配置。",
   savingSelection: "正在保存…",
   changeInterpreter: "更换解释器",
   collapseList: "收起列表",

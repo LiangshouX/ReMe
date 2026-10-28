@@ -31,7 +31,7 @@ export interface DependencyState {
   /** Wall clock tick while an installation runs, for the elapsed label. */
   now: number;
   recheck(): void;
-  start(upgrade: boolean): Promise<void>;
+  start(upgrade: boolean, indexUrl?: string): Promise<void>;
   cancel(): Promise<void>;
   dismiss(): void;
 }
@@ -42,9 +42,14 @@ export interface DependencyState {
  */
 export function useDependency(
   rpc: StatusRpc,
-  options: { pythonPath: string; onInstalled(): void },
+  options: {
+    pythonPath: string;
+    /** False for a remote endpoint, whose local steps are hidden. */
+    enabled?: boolean;
+    onInstalled(): void;
+  },
 ): DependencyState {
-  const { pythonPath, onInstalled } = options;
+  const { pythonPath, enabled = true, onInstalled } = options;
   const [check, setCheck] = useState<CheckState>({
     phase: "idle",
     forPath: "",
@@ -56,7 +61,7 @@ export function useDependency(
   installed.current = onInstalled;
 
   useEffect(() => {
-    if (!pythonPath) return;
+    if (!enabled || !pythonPath) return;
     const controller = new AbortController();
     void (async () => {
       try {
@@ -66,6 +71,7 @@ export function useDependency(
           { pythonPath },
           controller.signal,
         );
+        if (controller.signal.aborted) return;
         setCheck({
           phase: "ready",
           data: parseRemeCheck(value),
@@ -82,18 +88,28 @@ export function useDependency(
       }
     })();
     return () => controller.abort();
-  }, [rpc, pythonPath, tick]);
+  }, [rpc, pythonPath, tick, enabled]);
+
+  // Progress belongs to an interpreter: switching interpreters must not keep
+  // showing (or cancelling) a job that was started for the previous one.
+  const installFor = useRef(pythonPath);
+  useEffect(() => {
+    if (installFor.current === pythonPath) return;
+    installFor.current = pythonPath;
+    setInstall({ phase: "idle" });
+  }, [pythonPath]);
 
   // Restoring a running job is per interpreter: a job started for another
   // interpreter belongs to that interpreter's section, not this one.
   useEffect(() => {
-    if (!pythonPath) return;
+    if (!enabled || !pythonPath) return;
     const controller = new AbortController();
     void (async () => {
       try {
         const status = parseInstallStatus(
           await envCall(rpc, "installStatus", {}, controller.signal),
         );
+        if (controller.signal.aborted) return;
         if (status?.phase !== "running" || status.pythonPath !== pythonPath)
           return;
         setInstall({ phase: "running", jobId: status.id, job: status });
@@ -102,7 +118,7 @@ export function useDependency(
       }
     })();
     return () => controller.abort();
-  }, [rpc, pythonPath]);
+  }, [rpc, pythonPath, enabled]);
 
   const jobId = install.jobId;
   useEffect(() => {
@@ -161,12 +177,16 @@ export function useDependency(
   }, []);
 
   const start = useCallback(
-    async (upgrade: boolean) => {
+    async (upgrade: boolean, indexUrl?: string) => {
       if (!pythonPath || install.phase === "running") return;
       setInstall({ phase: "idle" });
       try {
         const status = parseInstallStatus(
-          await envCall(rpc, "install", { pythonPath, upgrade }),
+          await envCall(rpc, "install", {
+            pythonPath,
+            upgrade,
+            ...(indexUrl ? { indexUrl } : {}),
+          }),
         );
         setInstall(
           status && status.phase === "running"
@@ -235,6 +255,8 @@ export function DependencySection({
     ? { tone: "progress" as const, text: t("depMissing") }
     : checkData.versionOk && checkData.hasCore
     ? { tone: "ok" as const, text: t("depReady") }
+    : checkData.versionOk
+    ? { tone: "progress" as const, text: t("coreMissing") }
     : { tone: "progress" as const, text: t("depUpgrade") };
 
   return (
@@ -278,6 +300,9 @@ export function DependencySection({
             {t("checkRemeFailed")}
             {checkError ? `: ${checkError}` : ""}
           </p>
+        ) : null}
+        {checkData?.error ? (
+          <p className="reme-settings-error">{checkData.error}</p>
         ) : null}
         {checkData ? (
           <div className="reme-env-metrics">
@@ -361,7 +386,12 @@ export function DependencySection({
                   className="reme-settings-save"
                   onClick={() => {
                     setConfirming(false);
-                    void dependency.start(!checkData.versionOk);
+                    // The mirror choice reaches pip as `--index-url`; without
+                    // it the selector would be decorative.
+                    void dependency.start(
+                      !checkData.versionOk,
+                      mirror || undefined,
+                    );
                   }}
                 >
                   {t("confirmInstall")}

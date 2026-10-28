@@ -52,13 +52,21 @@ const RESPONSES = {
   },
   "remeEnv/installStatus": null,
   "remeEnv/readEnv": {
+    workspaceDir: "C:\\Users\\test\\.reme",
     exists: true,
     envPath: "C:\\Users\\test\\.reme\\.env",
     entries: [
-      { key: "LLM_BACKEND", value: "dashscope", secret: false, set: true },
+      {
+        key: "LLM_BACKEND",
+        value: "dashscope",
+        masked: "dashscope",
+        secret: false,
+        set: true,
+      },
       {
         key: "LLM_MODEL_NAME",
         value: "qwen3.7-plus",
+        masked: "qwen3.7-plus",
         secret: false,
         set: true,
       },
@@ -70,6 +78,7 @@ const RESPONSES = {
     managed: false,
     pid: 98820,
     endpoint: "http://127.0.0.1:2333",
+    logPath: "C:\\Users\\test\\.reme\\service.log",
   },
 };
 
@@ -248,6 +257,32 @@ test("marks the suggested interpreter and explains why", async (t) => {
   assert.deepEqual(calls.mutate.at(-1)?.ops, [
     { op: "set", path: ["pythonPath"], value: ENVS[0].exe },
   ]);
+});
+
+test("sends the chosen package mirror with the install request", async (t) => {
+  const { renderer, calls, restore } = await mount();
+  t.after(restore);
+
+  const select = renderer.root.findAll((node) => node.type === "select")[0];
+  await act(async () => {
+    select.props.onChange({
+      target: { value: "https://pypi.tuna.tsinghua.edu.cn/simple" },
+    });
+  });
+  await act(async () => {
+    buttonByText(renderer, envZh.reinstall).props.onClick();
+  });
+  await act(async () => {
+    buttonByText(renderer, envZh.confirmInstall).props.onClick();
+  });
+
+  const install = calls.rpc.filter((call) => call.method === "remeEnv/install");
+  assert.ok(install.length > 0, "the install request must be sent");
+  assert.deepEqual(install.at(-1).input, {
+    pythonPath: SUGGESTED,
+    upgrade: false,
+    indexUrl: "https://pypi.tuna.tsinghua.edu.cn/simple",
+  });
 });
 
 test("drops .env drafts when the workspace changes", async (t) => {
