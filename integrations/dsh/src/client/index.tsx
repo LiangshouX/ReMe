@@ -1,8 +1,9 @@
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useReducer, useState, useSyncExternalStore } from "react";
+import { SettingsFormModel } from "@deepseek-ai/dsh-client-ui-primitives";
+import type { SettingsFieldState } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 
 import type { ReMeSettings } from "../types.js";
-import { validEndpoint } from "../endpoint.js";
 import {
   ReMeEnvironmentTab,
   envEn,
@@ -17,36 +18,19 @@ import {
   type StatusRpc,
   type StatusTranslator,
 } from "./status-page.js";
+import { SETTINGS_SPECS } from "./settings-specs.js";
 import { styles } from "./styles.js";
 
 const NS = "reme.settings";
 const STATUS_NS = "reme.status";
 const ENV_NS = "reme.environment";
 const SETTINGS_NS = "reme-memory";
-const FIELDS = [
-  "endpoint",
-  "requestTimeoutMs",
-  "backgroundTimeoutMs",
-  "shutdownTimeoutMs",
-  "autoMemoryRetryMs",
-  "autoMemoryRetryMaxMs",
-  "autoMemoryEnabled",
-  "autoMemoryInterval",
-  "autoDreamEnabled",
-  "dreamCron",
-  "dreamHint",
-  "rootAgentsOnly",
-  "language",
-  "searchLimit",
-  "timezone",
-] as const satisfies readonly (keyof ReMeSettings)[];
 
-type Field = (typeof FIELDS)[number];
 type Translator = (key: keyof typeof en) => string;
 
 interface ClientContext {
   get(name: string): { rpc: StatusRpc };
-  effect(factory: () => (() => void) | void, label: string): void;
+  effect(factory: () => void | (() => void), label: string): void;
   locale: {
     bind(namespace: typeof NS): Translator;
     bind(namespace: typeof STATUS_NS): StatusTranslator;
@@ -72,23 +56,8 @@ interface ClientContext {
   };
 }
 
-interface Draft {
-  endpoint: string;
-  requestTimeoutMs: string;
-  backgroundTimeoutMs: string;
-  shutdownTimeoutMs: string;
-  autoMemoryRetryMs: string;
-  autoMemoryRetryMaxMs: string;
-  autoMemoryEnabled: boolean;
-  autoMemoryInterval: string;
-  autoDreamEnabled: boolean;
-  dreamTime: string;
-  dreamHint: string;
-  rootAgentsOnly: boolean;
-  language: "en" | "zh";
-  searchLimit: string;
-  timezone: string;
-}
+/** One control as the model currently stages it. */
+type FieldState = SettingsFieldState;
 
 interface ReMeCardProps {
   scope: ConfigForm<ReMeSettings>;
@@ -324,78 +293,61 @@ function ReMeSettingsCard({
     (listener) => scope.subscribe(listener),
     () => scope.getSnapshot(),
   );
-  const [draftOverride, setDraft] = useState<{
-    value: Draft;
-    revision: number | undefined;
-  }>();
-  const [resetAll, setResetAll] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saveState, setSaveState] = useState<"" | "saved" | "failed">("");
+  // DSH's form model stages the drafts, marks the ones that are invalid and
+  // writes every staged edit as one revision-fenced mutation, so this page owns
+  // only its controls and the field specs behind them.
+  const [model] = useState(
+    () => new SettingsFormModel<ReMeSettings>(scope, SETTINGS_SPECS),
+  );
+  const [, publish] = useReducer((tick: number) => tick + 1, 0);
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [tab, setTab] = useState<"memory" | "environment">("memory");
-  const value = snapshot.value;
-  const draft =
-    draftOverride?.value ??
-    (value === undefined ? undefined : draftFrom(value));
+  useEffect(() => () => model.dispose(), [model]);
 
   if (view === "summary") return <>{t("description")}</>;
   if (snapshot.status === "unavailable") return null;
-  const dirty =
-    resetAll ||
-    (value !== undefined &&
-      draft !== undefined &&
-      !sameDraft(draft, draftFrom(value)));
-  const validation = draft === undefined ? undefined : parseDraft(draft);
 
-  const update = <K extends keyof Draft>(field: K, next: Draft[K]) => {
-    if (value === undefined) return;
-    setDraft((current) => ({
-      value: { ...(current?.value ?? draftFrom(value)), [field]: next },
-      revision: current ? current.revision : snapshot.revision,
-    }));
-    setResetAll(false);
-    setSaveState("");
+  const value = snapshot.value;
+  const shell = model.shell();
+  const actions = model.actions();
+  const field = (name: string): FieldState => model.field(name);
+  // "The maximum retry delay is at least the initial one" is a relation between
+  // two fields, which a per-field spec cannot state, so the page keeps it.
+  const retryMax = field("autoMemoryRetryMaxMs").text.trim();
+  const retryBase = field("autoMemoryRetryMs").text.trim();
+  const inconsistent =
+    retryMax !== "" && retryBase !== "" && Number(retryMax) < Number(retryBase);
+  const blocked = shell.invalid || inconsistent;
+  const edit = (name: string, text: string): void => {
+    setSaved(false);
+    actions.edit(name, text);
+    // The model publishes to its bound stores; this page reads it directly, so
+    // every staged edit repaints the controls itself.
+    publish();
   };
-
-  const save = async () => {
-    if (
-      value === undefined ||
-      draft === undefined ||
-      validation === undefined ||
-      !snapshot.writable ||
-      !dirty ||
-      saving
-    )
-      return;
-    setSaving(true);
-    setSaveState("");
+  const save = async (): Promise<void> => {
+    if (!shell.writable || !shell.dirty || blocked || busy) return;
+    setSaved(false);
+    setBusy(true);
     try {
-      const ops = resetAll
-        ? FIELDS.map((field) => ({ op: "unset" as const, path: [field] }))
-        : FIELDS.flatMap((field) =>
-            Object.is(value[field], validation[field])
-              ? []
-              : [
-                  {
-                    op: "set" as const,
-                    path: [field],
-                    value: validation[field],
-                  },
-                ],
-          );
-      const success = await scope.mutate(
-        ops,
-        draftOverride?.revision ?? snapshot.revision,
-      );
-      setSaveState(success ? "saved" : "failed");
-      if (success) {
-        setDraft(undefined);
-        setResetAll(false);
-      }
-    } catch {
-      setSaveState("failed");
+      await model.save();
+      const after = model.shell();
+      setSaved(!after.failed && !after.dirty);
     } finally {
-      setSaving(false);
+      setBusy(false);
+      publish();
     }
+  };
+  const reset = (): void => {
+    setSaved(false);
+    for (const spec of SETTINGS_SPECS) actions.resetField(spec.field);
+    publish();
+  };
+  const discard = (): void => {
+    setSaved(false);
+    actions.discard();
+    publish();
   };
 
   return (
@@ -427,89 +379,63 @@ function ReMeSettingsCard({
           ) : (
             <p className="reme-settings-muted">{t("loading")}</p>
           )
+        ) : value === undefined ? (
+          <p className="reme-settings-muted">{t("loading")}</p>
         ) : (
           <>
-            {dirty ? (
+            {shell.dirty ? (
               <p className="reme-settings-pending">{t("unsaved")}</p>
             ) : null}
-            {snapshot.status === "loading" ||
-            draft === undefined ||
-            value === undefined ? (
-              <p className="reme-settings-muted">{t("loading")}</p>
-            ) : (
-              <>
-                <fieldset
-                  className="reme-settings-fields"
-                  disabled={saving || !snapshot.writable}
-                >
-                  <SettingsForm draft={draft} update={update} t={t} />
-                </fieldset>
-                {!snapshot.writable ? (
-                  <p className="reme-settings-error" role="status">
-                    {t("readOnly")}
-                  </p>
+            <fieldset
+              className="reme-settings-fields"
+              disabled={busy || !shell.writable}
+            >
+              <SettingsForm draft={field} edit={edit} t={t} />
+            </fieldset>
+            {!shell.writable ? (
+              <p className="reme-settings-error" role="status">
+                {t("readOnly")}
+              </p>
+            ) : null}
+            {blocked ? (
+              <p className="reme-settings-error" role="status">
+                {t("invalid")}
+              </p>
+            ) : null}
+            <div className="reme-settings-actions">
+              <button
+                type="button"
+                className="reme-settings-reset"
+                disabled={!shell.writable || busy}
+                onClick={reset}
+              >
+                {t("reset")}
+              </button>
+              <span className="reme-settings-result" role="status">
+                {shell.failed ? (
+                  <span className="reme-settings-error">{t("saveFailed")}</span>
                 ) : null}
-                {validation === undefined ? (
-                  <p className="reme-settings-error" role="status">
-                    {t("invalid")}
-                  </p>
+                {saved && !shell.dirty ? (
+                  <span className="reme-settings-success">{t("saved")}</span>
                 ) : null}
-                <div className="reme-settings-actions">
-                  <button
-                    type="button"
-                    className="reme-settings-reset"
-                    disabled={!snapshot.writable || saving}
-                    onClick={() => {
-                      setDraft({
-                        value: draftFrom(baseSettings(snapshot.base, value)),
-                        revision: snapshot.revision,
-                      });
-                      setResetAll(true);
-                      setSaveState("");
-                    }}
-                  >
-                    {t("reset")}
-                  </button>
-                  <span className="reme-settings-result" role="status">
-                    {saveState === "failed" ? (
-                      <span className="reme-settings-error">
-                        {t("saveFailed")}
-                      </span>
-                    ) : null}
-                    {saveState === "saved" ? (
-                      <span className="reme-settings-success">
-                        {t("saved")}
-                      </span>
-                    ) : null}
-                  </span>
-                  <button
-                    type="button"
-                    className="reme-settings-discard"
-                    disabled={!dirty || saving}
-                    onClick={() => {
-                      setDraft(undefined);
-                      setResetAll(false);
-                      setSaveState("");
-                    }}
-                  >
-                    {t("discard")}
-                  </button>
-                  <button
-                    type="button"
-                    className="reme-settings-save"
-                    disabled={
-                      !snapshot.writable ||
-                      !dirty ||
-                      validation === undefined ||
-                      saving
-                    }
-                    onClick={() => void save()}
-                  >
-                    {t(saving ? "saving" : "save")}
-                  </button>
-                </div>
-              </>
-            )}
+              </span>
+              <button
+                type="button"
+                className="reme-settings-discard"
+                disabled={!shell.dirty || busy}
+                onClick={discard}
+              >
+                {t("discard")}
+              </button>
+              <button
+                type="button"
+                className="reme-settings-save"
+                disabled={!shell.writable || !shell.dirty || blocked || busy}
+                onClick={() => void save()}
+              >
+                {t(busy ? "saving" : "save")}
+              </button>
+            </div>
           </>
         )}
       </div>
@@ -517,15 +443,19 @@ function ReMeSettingsCard({
   );
 }
 
+/** The memory-settings controls, all reading and writing through the model. */
 function SettingsForm({
   draft,
-  update,
+  edit,
   t,
 }: {
-  draft: Draft;
-  update: <K extends keyof Draft>(field: K, value: Draft[K]) => void;
+  draft: (name: string) => FieldState;
+  edit: (name: string, text: string) => void;
   t: Translator;
 }): JSX.Element {
+  const text = (name: string): string => draft(name).text;
+  const invalid = (name: string): boolean => draft(name).invalid;
+  const checked = (name: string): boolean => draft(name).text === "true";
   return (
     <>
       <section className="reme-settings-section">
@@ -533,17 +463,15 @@ function SettingsForm({
         <div className="reme-settings-grid">
           <Field wide label={t("endpoint")} hint={t("endpointHint")}>
             <input
-              value={draft.endpoint}
-              aria-invalid={!validEndpoint(draft.endpoint)}
-              onChange={(event) => update("endpoint", event.target.value)}
+              value={text("endpoint")}
+              aria-invalid={invalid("endpoint")}
+              onChange={(event) => edit("endpoint", event.target.value)}
             />
           </Field>
           <Field label={t("language")}>
             <select
-              value={draft.language}
-              onChange={(event) =>
-                update("language", event.target.value as "en" | "zh")
-              }
+              value={text("language")}
+              onChange={(event) => edit("language", event.target.value)}
             >
               <option value="zh">中文</option>
               <option value="en">English</option>
@@ -554,8 +482,8 @@ function SettingsForm({
               type="number"
               min="1"
               max="50"
-              value={draft.searchLimit}
-              onChange={(event) => update("searchLimit", event.target.value)}
+              value={text("searchLimit")}
+              onChange={(event) => edit("searchLimit", event.target.value)}
             />
           </Field>
           <Field label={t("requestTimeout")}>
@@ -563,10 +491,8 @@ function SettingsForm({
               type="number"
               min="1000"
               max="120000"
-              value={draft.requestTimeoutMs}
-              onChange={(event) =>
-                update("requestTimeoutMs", event.target.value)
-              }
+              value={text("requestTimeoutMs")}
+              onChange={(event) => edit("requestTimeoutMs", event.target.value)}
             />
           </Field>
         </div>
@@ -576,30 +502,32 @@ function SettingsForm({
         <div className="reme-settings-grid">
           <Check
             label={t("autoMemoryEnabled")}
-            checked={draft.autoMemoryEnabled}
-            onChange={(value) => update("autoMemoryEnabled", value)}
+            checked={checked("autoMemoryEnabled")}
+            onChange={(next) =>
+              edit("autoMemoryEnabled", next ? "true" : "false")
+            }
           />
           <Check
             label={t("rootOnly")}
-            checked={draft.rootAgentsOnly}
-            onChange={(value) => update("rootAgentsOnly", value)}
+            checked={checked("rootAgentsOnly")}
+            onChange={(next) => edit("rootAgentsOnly", next ? "true" : "false")}
           />
           <Field label={t("autoMemoryInterval")}>
             <input
               type="number"
               min="1"
               max="1000"
-              value={draft.autoMemoryInterval}
+              value={text("autoMemoryInterval")}
               onChange={(event) =>
-                update("autoMemoryInterval", event.target.value)
+                edit("autoMemoryInterval", event.target.value)
               }
             />
           </Field>
           <Field label={t("timezone")}>
             <input
-              value={draft.timezone}
-              aria-invalid={!validTimezone(draft.timezone)}
-              onChange={(event) => update("timezone", event.target.value)}
+              value={text("timezone")}
+              aria-invalid={invalid("timezone")}
+              onChange={(event) => edit("timezone", event.target.value)}
             />
           </Field>
         </div>
@@ -609,20 +537,22 @@ function SettingsForm({
         <div className="reme-settings-grid">
           <Check
             label={t("autoDreamEnabled")}
-            checked={draft.autoDreamEnabled}
-            onChange={(value) => update("autoDreamEnabled", value)}
+            checked={checked("autoDreamEnabled")}
+            onChange={(next) =>
+              edit("autoDreamEnabled", next ? "true" : "false")
+            }
           />
           <Field label={t("dreamTime")}>
             <input
               type="time"
-              value={draft.dreamTime}
-              onChange={(event) => update("dreamTime", event.target.value)}
+              value={text("dreamCron")}
+              onChange={(event) => edit("dreamCron", event.target.value)}
             />
           </Field>
           <Field wide label={t("dreamHint")}>
             <textarea
-              value={draft.dreamHint}
-              onChange={(event) => update("dreamHint", event.target.value)}
+              value={text("dreamHint")}
+              onChange={(event) => edit("dreamHint", event.target.value)}
             />
           </Field>
         </div>
@@ -635,31 +565,31 @@ function SettingsForm({
               type="number"
               min="1000"
               max="3600000"
-              value={draft.backgroundTimeoutMs}
+              value={text("backgroundTimeoutMs")}
               onChange={(event) =>
-                update("backgroundTimeoutMs", event.target.value)
+                edit("backgroundTimeoutMs", event.target.value)
               }
             />
           </Field>
           <Field label={t("retryDelay")}>
             <input
               type="number"
-              min={1000}
-              max={60000}
-              value={draft.autoMemoryRetryMs}
+              min="1000"
+              max="60000"
+              value={text("autoMemoryRetryMs")}
               onChange={(event) =>
-                update("autoMemoryRetryMs", event.target.value)
+                edit("autoMemoryRetryMs", event.target.value)
               }
             />
           </Field>
           <Field label={t("retryMaxDelay")}>
             <input
               type="number"
-              min={1000}
-              max={3600000}
-              value={draft.autoMemoryRetryMaxMs}
+              min="1000"
+              max="3600000"
+              value={text("autoMemoryRetryMaxMs")}
               onChange={(event) =>
-                update("autoMemoryRetryMaxMs", event.target.value)
+                edit("autoMemoryRetryMaxMs", event.target.value)
               }
             />
           </Field>
@@ -668,9 +598,9 @@ function SettingsForm({
               type="number"
               min="100"
               max="60000"
-              value={draft.shutdownTimeoutMs}
+              value={text("shutdownTimeoutMs")}
               onChange={(event) =>
-                update("shutdownTimeoutMs", event.target.value)
+                edit("shutdownTimeoutMs", event.target.value)
               }
             />
           </Field>
@@ -719,131 +649,6 @@ function Check({
       <span>{label}</span>
     </label>
   );
-}
-
-function draftFrom(value: ReMeSettings): Draft {
-  return {
-    endpoint: value.endpoint,
-    requestTimeoutMs: String(value.requestTimeoutMs),
-    backgroundTimeoutMs: String(value.backgroundTimeoutMs),
-    shutdownTimeoutMs: String(value.shutdownTimeoutMs),
-    autoMemoryRetryMs: String(value.autoMemoryRetryMs),
-    autoMemoryRetryMaxMs: String(value.autoMemoryRetryMaxMs),
-    autoMemoryEnabled: value.autoMemoryEnabled,
-    autoMemoryInterval: String(value.autoMemoryInterval),
-    autoDreamEnabled: value.autoDreamEnabled,
-    dreamTime: timeFromCron(value.dreamCron),
-    dreamHint: value.dreamHint,
-    rootAgentsOnly: value.rootAgentsOnly,
-    language: value.language,
-    searchLimit: String(value.searchLimit),
-    timezone: value.timezone,
-  };
-}
-
-/**
- * Validate the memory-settings drafts. Only the fields this page's `FIELDS`
- * list writes are parsed: the interpreter, workspace and auto-start values
- * belong to the Environment tab, which writes them on its own.
- */
-function parseDraft(draft: Draft): Pick<ReMeSettings, Field> | undefined {
-  const requestTimeoutMs = boundedInteger(draft.requestTimeoutMs, 1000, 120000);
-  const backgroundTimeoutMs = boundedInteger(
-    draft.backgroundTimeoutMs,
-    1000,
-    3600000,
-  );
-  const shutdownTimeoutMs = boundedInteger(draft.shutdownTimeoutMs, 100, 60000);
-  const autoMemoryRetryMs = boundedInteger(
-    draft.autoMemoryRetryMs,
-    1000,
-    60000,
-  );
-  const autoMemoryRetryMaxMs = boundedInteger(
-    draft.autoMemoryRetryMaxMs,
-    autoMemoryRetryMs ?? 1000,
-    3600000,
-  );
-  const autoMemoryInterval = boundedInteger(draft.autoMemoryInterval, 1, 1000);
-  const searchLimit = boundedInteger(draft.searchLimit, 1, 50);
-  if (
-    !validEndpoint(draft.endpoint) ||
-    !validTimezone(draft.timezone) ||
-    !/^\d{2}:\d{2}$/.test(draft.dreamTime)
-  )
-    return undefined;
-  if (
-    [
-      requestTimeoutMs,
-      backgroundTimeoutMs,
-      shutdownTimeoutMs,
-      autoMemoryRetryMs,
-      autoMemoryRetryMaxMs,
-      autoMemoryInterval,
-      searchLimit,
-    ].some((value) => value === undefined)
-  )
-    return undefined;
-  const [hour, minute] = draft.dreamTime.split(":");
-  return {
-    endpoint: draft.endpoint.trim().replace(/\/+$/, ""),
-    requestTimeoutMs: requestTimeoutMs!,
-    backgroundTimeoutMs: backgroundTimeoutMs!,
-    shutdownTimeoutMs: shutdownTimeoutMs!,
-    autoMemoryRetryMs: autoMemoryRetryMs!,
-    autoMemoryRetryMaxMs: autoMemoryRetryMaxMs!,
-    autoMemoryEnabled: draft.autoMemoryEnabled,
-    autoMemoryInterval: autoMemoryInterval!,
-    autoDreamEnabled: draft.autoDreamEnabled,
-    dreamCron: `${Number(minute)} ${Number(hour)} * * *`,
-    dreamHint: draft.dreamHint,
-    rootAgentsOnly: draft.rootAgentsOnly,
-    language: draft.language,
-    searchLimit: searchLimit!,
-    timezone: draft.timezone.trim(),
-  };
-}
-
-function boundedInteger(
-  text: string,
-  minimum: number,
-  maximum: number,
-): number | undefined {
-  const value = Number(text);
-  return Number.isInteger(value) && value >= minimum && value <= maximum
-    ? value
-    : undefined;
-}
-
-function validTimezone(value: string): boolean {
-  try {
-    new Intl.DateTimeFormat("en", { timeZone: value.trim() }).format(0);
-    return value.trim().length > 0;
-  } catch {
-    return false;
-  }
-}
-
-function timeFromCron(cron: string): string {
-  const match = /^(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+\*$/.exec(cron.trim());
-  if (match === null) return "";
-  return `${String(Number(match[2])).padStart(2, "0")}:${String(
-    Number(match[1]),
-  ).padStart(2, "0")}`;
-}
-
-function baseSettings(base: unknown, fallback: ReMeSettings): ReMeSettings {
-  return isRecord(base) ? (base as unknown as ReMeSettings) : fallback;
-}
-
-function sameDraft(left: Draft, right: Draft): boolean {
-  return (Object.keys(left) as (keyof Draft)[]).every((key) =>
-    Object.is(left[key], right[key]),
-  );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function installStyles(): () => void {

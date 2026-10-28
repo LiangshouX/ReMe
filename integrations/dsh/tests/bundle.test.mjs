@@ -102,6 +102,14 @@ test("builds a lazy DSH browser module for the ReMe settings card", async () => 
   assert.match(bundle, /Personal Knowledge Base/);
   assert.match(statusPage, /个人知识库/);
   assert.match(bundle, /health_check/);
+  // The settings card stages its drafts with DSH's own form model, shipped by
+  // the primitives package this bundle keeps external.
+  assert.match(
+    bundle,
+    /require\("@deepseek-ai\/dsh-client-ui-primitives"\)/,
+    "the client bundle resolves the primitives package at runtime",
+  );
+  assert.match(bundle, /SettingsFormModel/);
 });
 
 test("registers configuration on the ReMe bundle row", async () => {

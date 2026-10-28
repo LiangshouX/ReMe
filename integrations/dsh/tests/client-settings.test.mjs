@@ -1,11 +1,46 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import vm from "node:vm";
 import React from "react";
 import { act, create } from "react-test-renderer";
 import { resolveConfig } from "../dist/config.js";
+
+/**
+ * Evaluate the SettingsFormModel this plugin links against, straight out of the
+ * shipped primitives bundle.
+ *
+ * The package cannot be imported in Node (it loads CSS modules, icons and the
+ * syntax highlighter), but the form model region is plain JavaScript. Running
+ * that region means the card is exercised against DSH's real model instead of a
+ * re-implementation of it; a changed bundle layout fails here loudly.
+ */
+function loadSettingsFormModel() {
+  // Resolve the installed package rather than a fixed path: the packaged-plugin
+  // check installs it hoisted above this package, while the repository keeps it
+  // inside the package's own node_modules.
+  const manifest = createRequire(import.meta.url).resolve(
+    "@deepseek-ai/dsh-client-ui-primitives/package.json",
+  );
+  const source = readFileSync(
+    join(dirname(manifest), "lib", "index.js"),
+    "utf8",
+  );
+  const start = source.indexOf(
+    "//#region lib/types/settings-form/form-model.js",
+  );
+  const end = source.indexOf("//#endregion", start + 1);
+  assert.ok(
+    start >= 0 && end > start,
+    "unexpected @deepseek-ai/dsh-client-ui-primitives bundle layout",
+  );
+  return new Function(
+    `${source.slice(start, end)}\nreturn SettingsFormModel;`,
+  )();
+}
 
 async function editor(mutate) {
   let module;
@@ -29,13 +64,18 @@ async function editor(mutate) {
   });
   const nodeRequire = createRequire(import.meta.url);
   const client = module.factory((name) =>
-    name === "@deepseek-ai/dsh-client-ui-primitives" ? {} : nodeRequire(name),
+    name === "@deepseek-ai/dsh-client-ui-primitives"
+      ? { SettingsFormModel: loadSettingsFormModel() }
+      : nodeRequire(name),
   );
   let Component;
   let snapshot = {
     status: "ready",
     value: resolveConfig({}, {}),
     base: resolveConfig({}, {}),
+    // The Host reports the user layer it stored; every field here is an
+    // override, which is what "reset to defaults" clears.
+    user: resolveConfig({}, {}),
     revision: 7,
     writable: true,
   };
