@@ -38,7 +38,20 @@ const releases = [
     schema: "3.18.5-alpha.2",
   },
   { dsh: "0.2.1-rc.2", cordis: "4.0.5", loader: "1.0.6", schema: "3.18.5" },
+  {
+    dsh: "0.2.2-alpha.2",
+    cordis: "4.0.6-alpha.1",
+    loader: "1.0.7-alpha.1",
+    schema: "3.18.6-alpha.1",
+  },
 ];
+
+// `npm` is `npm.cmd` on Windows, which execFile cannot launch directly; the
+// script runs the npm CLI through node instead, using the path npm exported to
+// this process.
+const npmCommand = process.env.npm_execpath
+  ? [process.execPath, [process.env.npm_execpath]]
+  : ["npm", []];
 
 async function run(command, args, cwd) {
   try {
@@ -53,9 +66,13 @@ async function run(command, args, cwd) {
   }
 }
 
+/** Run the npm CLI on the platform this check runs on. */
+function runNpm(args, cwd) {
+  return run(npmCommand[0], [...npmCommand[1], ...args], cwd);
+}
+
 try {
-  const { stdout } = await run(
-    "npm",
+  const { stdout } = await runNpm(
     [
       "pack",
       "--json",
@@ -112,8 +129,7 @@ try {
       JSON.stringify({ private: true, type: "module", dependencies }),
     );
     // Install as a consumer with normal peer resolution, then check the shipped artifact.
-    await run(
-      "npm",
+    await runNpm(
       [
         "install",
         "--ignore-scripts",
@@ -157,7 +173,7 @@ try {
       ["--test", ...testFiles],
       installed,
     );
-    await run("npm", ["run", "build"], installed);
+    await runNpm(["run", "build"], installed);
     const count = /# tests (\d+)/.exec(tested.stdout)?.[1];
     process.stdout.write(
       `DSH ${release.dsh}: packed import, source build, and ${count} tests passed\n`,

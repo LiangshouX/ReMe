@@ -31,6 +31,7 @@ test("declares one installable DeepSeek Harness plugin", async () => {
       "0.2.1-alpha.2",
       "0.2.1-alpha.4",
       "0.2.1-rc.2",
+      "0.2.2-alpha.2",
     ]) {
       assert.ok(
         semver.satisfies(version, manifest.peerDependencies[dependency]),
@@ -51,6 +52,32 @@ test("declares one installable DeepSeek Harness plugin", async () => {
     assert.equal(manifest.peerDependenciesMeta[dependency]?.optional, true);
   }
   assert.equal(manifest.peerDependencies.openclaw, undefined);
+  // The framework ranges track the same releases as the DSH packages, so a
+  // supported DSH install cannot pull a framework the plugin rejects.
+  for (const [dependency, supported, rejected] of [
+    [
+      "@deepseek-ai/cordis",
+      ["4.0.4", "4.0.5-alpha.1", "4.0.5", "4.0.6-alpha.1", "4.1.0"],
+      ["4.0.3", "5.0.0"],
+    ],
+    [
+      "@deepseek-ai/schemastery",
+      ["3.18.4", "3.18.5-alpha.1", "3.18.5", "3.18.6-alpha.1"],
+      ["3.18.3", "4.0.0"],
+    ],
+  ]) {
+    for (const version of supported)
+      assert.ok(
+        semver.satisfies(version, manifest.peerDependencies[dependency]),
+        `${dependency} ${version} should be supported`,
+      );
+    for (const version of rejected)
+      assert.equal(
+        semver.satisfies(version, manifest.peerDependencies[dependency]),
+        false,
+        `${dependency} ${version} should be rejected`,
+      );
+  }
   assert.match(patch, /remeMemory: true/);
   assert.match(patch, /id: reme-memory-scope[\s\S]*id: reme-memory\r?\n/);
   assert.doesNotMatch(patch, /id: reme-memory-runtime/);
