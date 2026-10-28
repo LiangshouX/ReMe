@@ -9,6 +9,7 @@ import {
   envZh,
   type EnvTranslator,
 } from "../environment/client/tab.js";
+import { environmentStyles } from "../environment/client/styles.js";
 import {
   ReMeStatusPage,
   statusEn,
@@ -343,25 +344,7 @@ function ReMeSettingsCard({
     (value !== undefined &&
       draft !== undefined &&
       !sameDraft(draft, draftFrom(value)));
-  const validation =
-    draft === undefined
-      ? undefined
-      : parseDraft(
-          draft,
-          value && isRecord(value)
-            ? {
-                authToken:
-                  typeof value.authToken === "string" ? value.authToken : "",
-                pythonPath:
-                  typeof value.pythonPath === "string" ? value.pythonPath : "",
-                remeWorkspaceDir:
-                  typeof value.remeWorkspaceDir === "string"
-                    ? value.remeWorkspaceDir
-                    : "",
-                autoStart: value.autoStart === true,
-              }
-            : undefined,
-        );
+  const validation = draft === undefined ? undefined : parseDraft(draft);
 
   const update = <K extends keyof Draft>(field: K, next: Draft[K]) => {
     if (value === undefined) return;
@@ -758,13 +741,12 @@ function draftFrom(value: ReMeSettings): Draft {
   };
 }
 
-function parseDraft(
-  draft: Draft,
-  passthrough?: Pick<
-    ReMeSettings,
-    "authToken" | "pythonPath" | "remeWorkspaceDir" | "autoStart"
-  >,
-): ReMeSettings | undefined {
+/**
+ * Validate the memory-settings drafts. Only the fields this page's `FIELDS`
+ * list writes are parsed: the interpreter, workspace and auto-start values
+ * belong to the Environment tab, which writes them on its own.
+ */
+function parseDraft(draft: Draft): Pick<ReMeSettings, Field> | undefined {
   const requestTimeoutMs = boundedInteger(draft.requestTimeoutMs, 1000, 120000);
   const backgroundTimeoutMs = boundedInteger(
     draft.backgroundTimeoutMs,
@@ -805,10 +787,6 @@ function parseDraft(
   const [hour, minute] = draft.dreamTime.split(":");
   return {
     endpoint: draft.endpoint.trim().replace(/\/+$/, ""),
-    authToken: passthrough?.authToken ?? "",
-    pythonPath: passthrough?.pythonPath ?? "",
-    remeWorkspaceDir: passthrough?.remeWorkspaceDir ?? "",
-    autoStart: passthrough?.autoStart ?? false,
     requestTimeoutMs: requestTimeoutMs!,
     backgroundTimeoutMs: backgroundTimeoutMs!,
     shutdownTimeoutMs: shutdownTimeoutMs!,
@@ -871,7 +849,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function installStyles(): () => void {
   const tag = document.createElement("style");
   tag.dataset.pluginCss = "@agentscope-ai/reme-dsh-plugin/settings";
-  tag.textContent = styles;
+  tag.textContent = `${styles}\n${environmentStyles}`;
   document.head.appendChild(tag);
   return () => tag.remove();
 }

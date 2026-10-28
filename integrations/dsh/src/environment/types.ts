@@ -81,6 +81,8 @@ export interface InstallStatus {
   logPath: string;
   /** Tail of the install log; safe to poll. */
   logTail: string;
+  /** True between a cancel request and the pip process actually exiting. */
+  cancelling?: boolean;
 }
 
 export interface EnvEntry {
