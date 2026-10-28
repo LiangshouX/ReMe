@@ -108,6 +108,18 @@ function texts(node, found = []) {
 }
 
 async function mount() {
+  // The tab probes /health_check on mount; keep that hermetic.
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        success: true,
+        metadata: {
+          health: { version: "0.4.0.9", healthy: true, components: {} },
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
   const calls = { mutate: [] };
   const snapshot = {
     status: "ready",
@@ -146,7 +158,13 @@ async function mount() {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
-  return { renderer, calls };
+  return {
+    renderer,
+    calls,
+    restore: () => {
+      globalThis.fetch = originalFetch;
+    },
+  };
 }
 
 function buttonByText(renderer, label) {
@@ -157,8 +175,9 @@ function buttonByText(renderer, label) {
   return found[0];
 }
 
-test("renders the status hero and the four setup steps", async () => {
-  const { renderer } = await mount();
+test("renders the status hero and the four setup steps", async (t) => {
+  const { renderer, restore } = await mount();
+  t.after(restore);
   const json = renderer.toJSON();
   const classes = classesOf(json);
   const copy = texts(json).join(" ");
@@ -179,8 +198,9 @@ test("renders the status hero and the four setup steps", async () => {
   assert.match(copy, /C:\\Users\\test\\\.reme\\\.env/);
 });
 
-test("keeps the interpreter list collapsed until asked, then paginates", async () => {
-  const { renderer } = await mount();
+test("keeps the interpreter list collapsed until asked, then paginates", async (t) => {
+  const { renderer, restore } = await mount();
+  t.after(restore);
   assert.equal(classesOf(renderer.toJSON()).get("reme-env-option"), undefined);
 
   await act(async () => {
@@ -202,8 +222,9 @@ test("keeps the interpreter list collapsed until asked, then paginates", async (
   assert.equal(classesOf(renderer.toJSON()).get("reme-env-option"), 7);
 });
 
-test("marks the suggested interpreter and explains why", async () => {
-  const { renderer, calls } = await mount();
+test("marks the suggested interpreter and explains why", async (t) => {
+  const { renderer, calls, restore } = await mount();
+  t.after(restore);
   const json = renderer.toJSON();
   const recommended = renderer.root.findAll(
     (node) =>
