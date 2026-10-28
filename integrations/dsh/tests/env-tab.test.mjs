@@ -4,7 +4,7 @@ import test from "node:test";
 import React from "react";
 import { act, create } from "react-test-renderer";
 
-import { ReMeEnvironmentTab, envZh } from "../dist/client/env-tab.js";
+import { ReMeEnvironmentTab, envZh } from "../dist/environment/client/tab.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 

@@ -4,11 +4,11 @@ import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 import type { ReMeSettings } from "../types.js";
 import { validEndpoint } from "../endpoint.js";
 import {
+  ReMeEnvironmentTab,
   envEn,
   envZh,
-  ReMeEnvironmentTab,
   type EnvTranslator,
-} from "./env-tab.js";
+} from "../environment/client/tab.js";
 import {
   ReMeStatusPage,
   statusEn,

@@ -1,7 +1,8 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
-import { safeError } from "../endpoint.js";
+import { safeError } from "../../endpoint.js";
+import type { EnvSummary, LlmTestResult } from "../types.js";
 import type { RunCommand } from "./runner.js";
 
 /** Keys the Environment tab manages; split for the two form groups. */
@@ -19,31 +20,6 @@ export const EMBEDDING_KEYS = [
 ] as const;
 const MANAGED_KEYS: readonly string[] = [...LLM_KEYS, ...EMBEDDING_KEYS];
 const SECRET_KEYS = new Set(["LLM_API_KEY", "EMBEDDING_API_KEY"]);
-
-export interface EnvEntry {
-  key: string;
-  secret: boolean;
-  /** True when the key has a non-empty value on disk. */
-  set: boolean;
-  /** Masked tail for secrets; the plain value for non-secret keys. */
-  masked: string;
-  /** Plain value for non-secret keys; empty for secrets. */
-  value: string;
-}
-
-export interface EnvSummary {
-  workspaceDir: string;
-  envPath: string;
-  exists: boolean;
-  entries: EnvEntry[];
-}
-
-export interface LlmTestResult {
-  ok: boolean;
-  status: number;
-  latencyMs: number;
-  error: string;
-}
 
 /** Empty means "~/.reme"; "~" expands against home; relative paths are rejected. */
 export function resolveWorkspaceDir(raw: string, home: string): string {

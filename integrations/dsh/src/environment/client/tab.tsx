@@ -1,23 +1,22 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 
-import { safeError } from "../endpoint.js";
-import type { InstallStatus } from "../pyenv/install.js";
-import type { RemeCheck } from "../pyenv/reme.js";
+import { safeError } from "../../endpoint.js";
+import { ReMeClient } from "../../reme/client.js";
+import type { ReMeSettings } from "../../types.js";
+import type { StatusRpc } from "../../client/status-page.js";
 import type {
-  ServiceLog,
-  ServiceStartResult,
-  ServiceState,
-} from "../pyenv/service.js";
-import type {
+  EnvSummary,
+  InstallStatus,
+  LlmTestResult,
   PythonDetection,
   PythonEnv,
   PythonOrigin,
-} from "../pyenv/types.js";
-import type { EnvSummary, LlmTestResult } from "../pyenv/workspace.js";
-import { ReMeClient } from "../reme/client.js";
-import type { ReMeSettings } from "../types.js";
-import type { StatusRpc } from "./status-page.js";
+  RemeCheck,
+  ServiceLog,
+  ServiceStartResult,
+  ServiceState,
+} from "../types.js";
 
 const MINICONDA_URL = "https://docs.conda.io/en/latest/miniconda.html";
 

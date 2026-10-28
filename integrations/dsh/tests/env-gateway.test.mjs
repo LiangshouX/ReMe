@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Context } from "@deepseek-ai/cordis";
 
-import { ReMeEnvGateway } from "../dist/env-gateway.js";
+import { ReMeEnvGateway } from "../dist/environment/host/gateway.js";
 
 /** Manager stub: no subprocesses, just enough surface for the gateway. */
 function stubManager() {

@@ -1,5 +1,6 @@
 import { dirname, isAbsolute, join } from "node:path";
 
+import type { RemeCheck, RemeProbe } from "../types.js";
 import type { RunCommand } from "./runner.js";
 
 /** Minimum reme-ai version this DSH integration is tested against. */
@@ -12,24 +13,6 @@ export interface RemeIO {
   run: RunCommand;
   platform: string;
   exists(path: string): boolean;
-}
-
-export interface RemeProbe {
-  installed: boolean;
-  version: string;
-  /** True when the version satisfies {@link MINIMUM_REME}. */
-  versionOk: boolean;
-}
-
-export interface RemeCheck extends RemeProbe {
-  /** True when the installed version satisfies {@link MINIMUM_REME}. */
-  versionOk: boolean;
-  /** True when the AgentScope `[core]` extras import (agentscope) works. */
-  hasCore: boolean;
-  /** Absolute reme CLI path, or "" when only the python wrapper is available. */
-  cliPath: string;
-  /** Non-empty when the interpreter itself could not be probed. */
-  error: string;
 }
 
 /** Numeric dotted-version comparison; returns -1, 0 or 1. */

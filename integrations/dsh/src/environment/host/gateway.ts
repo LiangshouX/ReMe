@@ -1,16 +1,17 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 
-import type { InstallStatus } from "./pyenv/install.js";
-import type { RemeCheck } from "./pyenv/reme.js";
 import type {
+  EnvSummary,
+  InstallStatus,
+  LlmTestResult,
+  PythonDetection,
+  RemeCheck,
   ServiceLog,
   ServiceStartResult,
   ServiceState,
-} from "./pyenv/service.js";
-import type { PythonDetection } from "./pyenv/types.js";
-import type { EnvSummary, LlmTestResult } from "./pyenv/workspace.js";
-import type { ReMeEnvManager } from "./env-manager.js";
+} from "../types.js";
+import type { ReMeEnvManager } from "./manager.js";
 
 declare module "@deepseek-ai/cordis" {
   interface Context {

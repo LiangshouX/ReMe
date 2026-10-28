@@ -14,7 +14,7 @@ import {
   parseVerifyOutput,
   suggestInterpreter,
   versionAtLeast,
-} from "../dist/pyenv/detect.js";
+} from "../dist/environment/host/detect.js";
 
 function fakeRun(rules) {
   return async (exe, args) => {

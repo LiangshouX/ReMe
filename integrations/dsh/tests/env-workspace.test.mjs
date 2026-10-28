@@ -13,7 +13,7 @@ import {
   resolveWorkspaceDir,
   testLlm,
   validateEnvUpdate,
-} from "../dist/pyenv/workspace.js";
+} from "../dist/environment/host/workspace.js";
 
 test("resolves the workspace directory with ~/.reme defaults", () => {
   const home = process.platform === "win32" ? "C:\\Users\\u" : "/home/u";

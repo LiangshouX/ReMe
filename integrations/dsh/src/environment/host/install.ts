@@ -2,30 +2,11 @@ import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
-export type InstallPhase = "running" | "succeeded" | "failed" | "cancelled";
-
-export interface InstallRequest {
-  /** Absolute interpreter that receives the packages. */
-  pythonPath: string;
-  /** Upgrade an existing installation to the newest satisfying version. */
-  upgrade?: boolean;
-  /** Optional package index URL (mirror); empty keeps the user's pip config. */
-  indexUrl?: string;
-}
-
-export interface InstallStatus {
-  id: string;
-  phase: InstallPhase;
-  pythonPath: string;
-  /** Effective command line, for display and diagnostics. */
-  command: string;
-  startedAt: string;
-  finishedAt?: string;
-  exitCode?: number | null;
-  logPath: string;
-  /** Tail of the install log; safe to poll. */
-  logTail: string;
-}
+import type {
+  InstallPhase,
+  InstallRequest,
+  InstallStatus,
+} from "../types.js";
 
 export interface InstallChild {
   pid: number | undefined;

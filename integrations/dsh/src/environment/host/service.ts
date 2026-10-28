@@ -11,32 +11,7 @@ import {
 import { createConnection } from "node:net";
 import { dirname } from "node:path";
 
-export interface ServiceState {
-  phase: "running" | "stopped" | "conflict";
-  /** True when the running service was started by this plugin. */
-  managed: boolean;
-  endpoint: string;
-  pid?: number;
-  version?: string;
-  startedAt?: string;
-  logPath: string;
-}
-
-export interface ServiceStartResult {
-  started: boolean;
-  alreadyRunning: boolean;
-  pid?: number;
-  version?: string;
-  command: string;
-  logPath: string;
-  startedAt: string;
-  error?: string;
-}
-
-export interface ServiceLog {
-  logPath: string;
-  lines: string;
-}
+import type { ServiceStartResult, ServiceState } from "../types.js";
 
 export interface PersistedService {
   pid?: number;

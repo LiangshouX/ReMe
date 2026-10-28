@@ -12,7 +12,7 @@ import {
   startService,
   stopService,
   writeServiceState,
-} from "../dist/pyenv/service.js";
+} from "../dist/environment/host/service.js";
 
 function fakeIO(overrides = {}) {
   const calls = { killTree: [], spawn: [] };

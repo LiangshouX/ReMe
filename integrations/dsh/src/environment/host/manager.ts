@@ -2,28 +2,22 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { detectPythonEnvs } from "./pyenv/detect.js";
+import { detectPythonEnvs } from "./detect.js";
 import {
   createInstallSpawner,
   InstallJobs,
   tailLog,
-  type InstallRequest,
-  type InstallStatus,
-} from "./pyenv/install.js";
-import { checkReme, remeVersionAtLeast, type RemeCheck } from "./pyenv/reme.js";
-import { createNodeRunner } from "./pyenv/runner.js";
+} from "./install.js";
+import { checkReme, remeVersionAtLeast } from "./reme.js";
+import { createNodeRunner } from "./runner.js";
 import {
   createServiceIO,
   readServiceState,
   serviceStatus,
   startService,
   stopService,
-  type ServiceIO,
-  type ServiceLog,
-  type ServiceStartResult,
-  type ServiceState,
-} from "./pyenv/service.js";
-import type { PythonDetection } from "./pyenv/types.js";
+} from "./service.js";
+import type { ServiceIO } from "./service.js";
 import {
   envSummary,
   parseEnvFile,
@@ -31,9 +25,18 @@ import {
   testLlm,
   validateEnvUpdate,
   writeEnvFile,
-  type EnvSummary,
-  type LlmTestResult,
-} from "./pyenv/workspace.js";
+} from "./workspace.js";
+import type {
+  EnvSummary,
+  InstallRequest,
+  InstallStatus,
+  LlmTestResult,
+  PythonDetection,
+  RemeCheck,
+  ServiceLog,
+  ServiceStartResult,
+  ServiceState,
+} from "../types.js";
 
 const CACHE_MS = 60_000;
 

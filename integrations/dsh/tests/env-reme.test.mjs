@@ -9,8 +9,8 @@ import {
   compareVersions,
   parseRemeVersion,
   remeVersionAtLeast,
-} from "../dist/pyenv/reme.js";
-import { InstallJobs, pipArgs, tailLog } from "../dist/pyenv/install.js";
+} from "../dist/environment/host/reme.js";
+import { InstallJobs, pipArgs, tailLog } from "../dist/environment/host/install.js";
 
 const SNIPPETS = {
   version: "importlib.metadata",

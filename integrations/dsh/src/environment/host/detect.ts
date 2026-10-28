@@ -1,10 +1,10 @@
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { join as posixJoin } from "node:path/posix";
 
-import { safeError } from "../endpoint.js";
+import { safeError } from "../../endpoint.js";
 import type { RunCommand, RunResult } from "./runner.js";
 import { probeReme, remeVersionAtLeast } from "./reme.js";
-import type { PythonDetection, PythonEnv, PythonOrigin } from "./types.js";
+import type { PythonDetection, PythonEnv, PythonOrigin } from "../types.js";
 
 /** ReMe requires Python 3.11 or newer. */
 export const MINIMUM_PYTHON = "3.11";
