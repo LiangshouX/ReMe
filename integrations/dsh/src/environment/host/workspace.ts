@@ -56,29 +56,39 @@ export function parseEnvFile(text: string): Record<string, string> {
 
 /**
  * Rewrite only the lines whose keys appear in updates; every other line
- * (comments, unknown variables, ordering) is preserved byte-for-byte.
+ * (comments, unknown variables, ordering) is preserved byte-for-byte, and the
+ * file keeps its own line ending.
+ *
+ * A key that appears more than once is rewritten in every position. Parsing
+ * keeps the last occurrence, so rewriting only the first would leave an older
+ * value in force: after this function every duplicate agrees.
  */
 export function mergeEnvFile(
   existingText: string,
   updates: Record<string, string>,
 ): string {
   const pending = new Map(Object.entries(updates));
+  const eol = /\r\n/.test(existingText) ? "\r\n" : "\n";
   const lines = existingText.length ? existingText.split(/\r?\n/) : [];
   const output: string[] = [];
+  const written = new Set<string>();
   for (const line of lines) {
     const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line);
     const key = match?.[1] ?? "";
     if (key && pending.has(key)) {
+      // Every occurrence takes the new value: parsing keeps the last one, so
+      // rewriting only the first would leave an older value in force.
       output.push(`${key}=${pending.get(key) ?? ""}`);
-      pending.delete(key);
+      written.add(key);
       continue;
     }
     output.push(line);
   }
   // Normalize the trailing newline before appending new keys.
   while (output.length && output[output.length - 1] === "") output.pop();
-  for (const [key, value] of pending) output.push(`${key}=${value}`);
-  return `${output.join("\n")}\n`;
+  for (const [key, value] of pending)
+    if (!written.has(key)) output.push(`${key}=${value}`);
+  return `${output.join(eol)}${eol}`;
 }
 
 /** "••••" plus the last four characters; empty values stay empty. */
@@ -125,19 +135,13 @@ export function validateEnvUpdate(values: Record<string, string>): void {
     );
 }
 
-/** Merge updates into an existing .env, creating parent directories as needed. */
-export function writeEnvFile(
-  path: string,
-  updates: Record<string, string>,
-): void {
-  let existing = "";
-  try {
-    existing = readFileSync(path, "utf8");
-  } catch {
-    // First write creates the file.
-  }
+/**
+ * Write a fully merged `.env`. The caller merges and validates first, so the
+ * file on disk is exactly what was validated.
+ */
+export function writeEnvText(path: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, mergeEnvFile(existing, updates), "utf8");
+  writeFileSync(path, text, "utf8");
 }
 
 /**

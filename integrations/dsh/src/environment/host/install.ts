@@ -2,11 +2,7 @@ import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
-import type {
-  InstallPhase,
-  InstallRequest,
-  InstallStatus,
-} from "../types.js";
+import type { InstallPhase, InstallRequest, InstallStatus } from "../types.js";
 
 export interface InstallChild {
   pid: number | undefined;
@@ -127,6 +123,10 @@ interface Job {
   exitCode?: number | null;
   logPath: string;
   child: InstallChild;
+  /** Set between a cancel request and the pip process actually exiting. */
+  cancelling: boolean;
+  /** Fallback that settles the job if the process ignores the kill. */
+  cancelTimer?: ReturnType<typeof setTimeout>;
 }
 
 /**
@@ -172,15 +172,11 @@ export class InstallJobs {
       startedAt: new Date().toISOString(),
       logPath,
       child,
+      cancelling: false,
     };
     this.jobs.set(id, job);
     this.latest = id;
-    child.onExit((code) => {
-      if (job.phase !== "running") return;
-      job.phase = code === 0 ? "succeeded" : "failed";
-      job.exitCode = code;
-      job.finishedAt = new Date().toISOString();
-    });
+    child.onExit((code) => this.finish(job, code));
     return this.snapshot(job);
   }
 
@@ -190,19 +186,49 @@ export class InstallJobs {
     return job ? this.snapshot(job) : null;
   }
 
-  /** Ask pip to stop; the polling client observes the cancelled phase. */
+  /**
+   * Ask pip to stop. The job keeps the interpreter locked (phase stays
+   * `running`, `cancelling` set) until the process has actually exited, so a
+   * second installation cannot start while the first is still dying.
+   */
   cancel(jobId?: string): boolean {
     const job = this.jobs.get(this.key(jobId));
-    if (!job || job.phase !== "running") return false;
-    job.phase = "cancelled";
-    job.finishedAt = new Date().toISOString();
+    if (!job || job.phase !== "running" || job.cancelling) return false;
+    job.cancelling = true;
     job.child.kill();
+    // A process that ignores the kill must not lock the interpreter forever.
+    job.cancelTimer = setTimeout(() => this.finish(job, null), 15_000);
+    job.cancelTimer.unref();
     return true;
+  }
+
+  /** Stop every running installation; called when the plugin unloads. */
+  dispose(): void {
+    for (const job of this.jobs.values()) {
+      if (job.phase !== "running") continue;
+      job.cancelling = true;
+      job.child.kill();
+    }
   }
 
   private key(jobId?: string): string {
     const trimmed = (jobId ?? "").trim();
     return trimmed || this.latest || "";
+  }
+
+  /** Settle a running job exactly once, from an exit or the cancel fallback. */
+  private finish(job: Job, code: number | null): void {
+    if (job.phase !== "running") return;
+    if (job.cancelTimer) clearTimeout(job.cancelTimer);
+    job.cancelTimer = undefined;
+    job.phase = job.cancelling
+      ? "cancelled"
+      : code === 0
+      ? "succeeded"
+      : "failed";
+    job.exitCode = code;
+    job.finishedAt = new Date().toISOString();
+    job.cancelling = false;
   }
 
   /** Serialize only JSON-safe values; optional fields are omitted when unset. */
@@ -215,6 +241,7 @@ export class InstallJobs {
       startedAt: job.startedAt,
       ...(job.finishedAt === undefined ? {} : { finishedAt: job.finishedAt }),
       ...(job.exitCode === undefined ? {} : { exitCode: job.exitCode }),
+      ...(job.cancelling ? { cancelling: true } : {}),
       logPath: job.logPath,
       logTail: tailLog(job.logPath),
     };

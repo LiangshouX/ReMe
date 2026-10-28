@@ -199,11 +199,16 @@ export class ReMeClient {
         throw new TypeError(
           "Invalid ReMe endpoint: credentials, query, and fragment are unsupported",
         );
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      // The token belongs to the endpoint it was configured for, so it is sent
+      // here and not on any other request this plugin makes.
+      if (config.authToken)
+        headers.Authorization = `Bearer ${config.authToken}`;
       const response = await fetch(`${config.endpoint}/${job}`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers,
         body: JSON.stringify(payload),
         signal,
       });

@@ -29,6 +29,10 @@ export function apply(ctx: Context, input: ReMeConfigInput = {}): void {
   ctx.provide("remeMemory", runtime);
   const envManager = new ReMeEnvManager();
   ctx.provide("remeEnv", envManager);
+  // The manager owns the bounded operations it started (pip installs), so it
+  // releases them when this plugin unloads. The detached ReMe service is not
+  // part of that lifetime: it is meant to outlive DSH.
+  ctx.effect(() => () => envManager.dispose(), "remeMemory.envLifetime()");
   void ctx.plugin(ReMeStatusGateway);
   void ctx.plugin(ReMeEnvGateway);
   ctx.effect(() => {
@@ -39,6 +43,7 @@ export function apply(ctx: Context, input: ReMeConfigInput = {}): void {
           endpoint: live.endpoint,
           pythonPath: live.pythonPath,
           workspaceDir: live.remeWorkspaceDir,
+          authToken: live.authToken,
         })
         .catch((error: unknown) => {
           ctx.logger.warn("remeMemory.envAutoStart failed", {

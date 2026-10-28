@@ -10,7 +10,11 @@ import {
   parseRemeVersion,
   remeVersionAtLeast,
 } from "../dist/environment/host/reme.js";
-import { InstallJobs, pipArgs, tailLog } from "../dist/environment/host/install.js";
+import {
+  InstallJobs,
+  pipArgs,
+  tailLog,
+} from "../dist/environment/host/install.js";
 
 const SNIPPETS = {
   version: "importlib.metadata",
@@ -212,15 +216,33 @@ test("tracks a failed pip job and keeps the log tail", (t) => {
   assert.match(done?.logTail ?? "", /Could not find a version/);
 });
 
-test("cancels a running job without reporting a failure", (t) => {
+test("keeps the interpreter locked until a cancelled job exits", (t) => {
   const { jobs, children } = makeJobs(t);
   const started = jobs.start({ pythonPath: "C:\\env\\python.exe" });
   assert.equal(jobs.cancel(started.id), true);
   assert.equal(children[0].killed, true);
-  assert.equal(jobs.status(started.id)?.phase, "cancelled");
-  children[0].exit(1); // Late exits must not overwrite the cancelled phase.
-  assert.equal(jobs.status(started.id)?.phase, "cancelled");
+  // The process still owns the interpreter, so the job stays running until the
+  // exit is observed and no second installation may start.
+  const cancelling = jobs.status(started.id);
+  assert.equal(cancelling?.phase, "running");
+  assert.equal(cancelling?.cancelling, true);
+  assert.equal(
+    jobs.start({ pythonPath: "C:\\env\\python.exe" }).id,
+    started.id,
+  );
   assert.equal(jobs.cancel(started.id), false);
+  children[0].exit(1); // A late exit settles the cancelled job, not a failure.
+  assert.equal(jobs.status(started.id)?.phase, "cancelled");
+  assert.equal(jobs.status(started.id)?.cancelling, undefined);
+});
+
+test("dispose stops the installations the manager still owns", (t) => {
+  const { jobs, children } = makeJobs(t);
+  const started = jobs.start({ pythonPath: "C:\\env\\python.exe" });
+  jobs.dispose();
+  assert.equal(children[0].killed, true);
+  children[0].exit(null);
+  assert.equal(jobs.status(started.id)?.phase, "cancelled");
 });
 
 test("reuses the running job for the same interpreter and validates paths", (t) => {

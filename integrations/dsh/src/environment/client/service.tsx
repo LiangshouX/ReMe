@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import type { StatusRpc } from "../../client/status-page.js";
 import { safeError } from "../../endpoint.js";
-import { ReMeClient } from "../../reme/client.js";
 import type { ServiceState } from "../types.js";
 import type { EnvTranslator } from "./locales.js";
 import { fill } from "./locales.js";
 import { StatusBadge } from "./presentation.js";
 import {
   envCall,
+  parseHealth,
   parseServiceLog,
   parseServiceStart,
   parseServiceState,
@@ -52,9 +52,10 @@ export function useService(
     local: boolean;
     pythonPath: string;
     workspaceDir: string;
+    authToken: string;
   },
 ): ServiceControl {
-  const { t, endpoint, local, pythonPath, workspaceDir } = options;
+  const { t, endpoint, local, pythonPath, workspaceDir, authToken } = options;
   const [state, setState] = useState<ServiceViewState>({ phase: "checking" });
   const [stopping, setStopping] = useState(false);
   const [tick, setTick] = useState(0);
@@ -65,15 +66,17 @@ export function useService(
   });
 
   useEffect(() => {
-    if (!local || !endpoint) {
-      setState({ phase: "checking" });
-      return;
-    }
+    if (!local || !endpoint) return;
     const controller = new AbortController();
     void (async () => {
       try {
         const next = parseServiceState(
-          await envCall(rpc, "serviceStatus", { endpoint }, controller.signal),
+          await envCall(
+            rpc,
+            "serviceStatus",
+            { endpoint, authToken },
+            controller.signal,
+          ),
         );
         if (controller.signal.aborted) return;
         setState((current) =>
@@ -91,7 +94,7 @@ export function useService(
       }
     })();
     return () => controller.abort();
-  }, [rpc, endpoint, local, tick]);
+  }, [rpc, endpoint, local, authToken, tick]);
 
   const refresh = useCallback(() => setTick((current) => current + 1), []);
 
@@ -105,15 +108,11 @@ export function useService(
           endpoint,
           pythonPath,
           workspaceDir,
+          authToken,
         }),
       );
       if (started.error) {
         setState({ phase: "error", error: started.error });
-        return;
-      }
-      if (started.alreadyRunning) {
-        setState({ phase: "running" });
-        refresh();
         return;
       }
       const deadline = Date.now() + START_DEADLINE_MS;
@@ -125,7 +124,7 @@ export function useService(
         }
         try {
           const status = parseServiceState(
-            await envCall(rpc, "serviceStatus", { endpoint }),
+            await envCall(rpc, "serviceStatus", { endpoint, authToken }),
           );
           if (status.phase === "running") {
             setState({ phase: "running", data: status });
@@ -138,7 +137,7 @@ export function useService(
     } catch (error) {
       setState({ phase: "error", error: safeError(error) });
     }
-  }, [endpoint, pythonPath, refresh, rpc, state.phase, t, workspaceDir]);
+  }, [authToken, endpoint, pythonPath, rpc, state.phase, t, workspaceDir]);
 
   const stop = useCallback(async () => {
     if (stopping) return;
@@ -184,14 +183,13 @@ export interface ConnectionState {
  * URL), so the hero still reports whether the configured endpoint answers.
  */
 export function useHealth(options: {
+  rpc: StatusRpc;
   endpoint: string;
   enabled: boolean;
   tick: number;
-  requestTimeoutMs: number;
-  backgroundTimeoutMs: number;
+  authToken: string;
 }): ConnectionState {
-  const { endpoint, enabled, tick, requestTimeoutMs, backgroundTimeoutMs } =
-    options;
+  const { rpc, endpoint, enabled, tick, authToken } = options;
   const [health, setHealth] = useState<ConnectionState>({
     phase: "loading",
     endpoint: "",
@@ -200,27 +198,29 @@ export function useHealth(options: {
   useEffect(() => {
     if (!enabled || !endpoint) return;
     const controller = new AbortController();
-    const client = new ReMeClient({
-      endpoint,
-      requestTimeoutMs,
-      backgroundTimeoutMs,
-    });
-    void client
-      .healthCheck({ signal: controller.signal })
-      .then((result) => {
+    void (async () => {
+      try {
+        const result = parseHealth(
+          await envCall(
+            rpc,
+            "health",
+            { endpoint, authToken },
+            controller.signal,
+          ),
+        );
         if (controller.signal.aborted) return;
         setHealth(
           result.ok
-            ? { phase: "ok", endpoint, version: result.health?.version ?? "" }
+            ? { phase: "ok", endpoint, version: result.version }
             : { phase: "fail", endpoint, error: result.error },
         );
-      })
-      .catch((error: unknown) => {
+      } catch (error) {
         if (!controller.signal.aborted)
           setHealth({ phase: "fail", endpoint, error: safeError(error) });
-      });
+      }
+    })();
     return () => controller.abort();
-  }, [endpoint, enabled, requestTimeoutMs, backgroundTimeoutMs, tick]);
+  }, [authToken, endpoint, enabled, rpc, tick]);
 
   return health;
 }

@@ -110,6 +110,16 @@ export interface LlmTestResult {
   error: string;
 }
 
+/** Whether the configured endpoint answers, probed from the DSH Host. */
+export interface ConnectionHealth {
+  endpoint: string;
+  ok: boolean;
+  version: string;
+  /** Non-empty when the endpoint answered but not as a ReMe service. */
+  error: string;
+  checkedAt: string;
+}
+
 export interface ServiceState {
   phase: "running" | "stopped" | "conflict";
   /** True when the running service was started by this plugin. */

@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import {
   buildStartCommand,
+  ownsService,
   parseLocalEndpoint,
   readServiceState,
   serviceStatus,
@@ -14,12 +15,14 @@ import {
   writeServiceState,
 } from "../dist/environment/host/service.js";
 
+const ENDPOINT = "http://127.0.0.1:2334";
+
 function fakeIO(overrides = {}) {
   const calls = { killTree: [], spawn: [] };
   const io = {
-    fetchHealth: async () => ({ ok: false, version: "" }),
+    fetchHealth: async () => ({ ok: false, version: "", error: "" }),
     portOpen: async () => false,
-    spawnService(options) {
+    async spawnService(options) {
       calls.spawn.push(options);
       return { pid: 4321 };
     },
@@ -27,11 +30,30 @@ function fakeIO(overrides = {}) {
       calls.killTree.push(pid);
     },
     probePid() {},
+    processImage: async () => "python.exe",
     exists: () => true,
     platform: "win32",
     ...overrides,
   };
   return { io, calls };
+}
+
+function tempState(t, prefix) {
+  const directory = mkdtempSync(join(tmpdir(), prefix));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  return { directory, statePath: join(directory, "service.json") };
+}
+
+function record(statePath, overrides = {}) {
+  writeServiceState(statePath, {
+    pid: 777,
+    endpoint: ENDPOINT,
+    workspaceDir: join(statePath, ".."),
+    pythonPath: "D:\\env\\python.exe",
+    command: "reme start",
+    startedAt: "2026-10-27T00:00:00.000Z",
+    ...overrides,
+  });
 }
 
 test("accepts only loopback endpoints and validates the port", () => {
@@ -93,31 +115,22 @@ test("falls back to the interpreter wrapper when the CLI is missing", () => {
 });
 
 test("derives running, conflict and stopped phases", async (t) => {
-  const directory = mkdtempSync(join(tmpdir(), "reme-service-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const statePath = join(directory, "service.json");
+  const { directory, statePath } = tempState(t, "reme-service-");
   const base = {
-    endpoint: "http://127.0.0.1:2334",
+    endpoint: ENDPOINT,
     statePath,
     logPath: join(directory, "service.log"),
   };
 
   const runningIo = fakeIO({
-    fetchHealth: async () => ({ ok: true, version: "0.4.0.9" }),
+    fetchHealth: async () => ({ ok: true, version: "0.4.0.9", error: "" }),
   });
   let status = await serviceStatus(runningIo.io, base);
   assert.equal(status.phase, "running");
   assert.equal(status.managed, false);
   assert.equal(status.version, "0.4.0.9");
 
-  writeServiceState(statePath, {
-    pid: 777,
-    endpoint: base.endpoint,
-    workspaceDir: directory,
-    pythonPath: "D:\\env\\python.exe",
-    command: "reme start",
-    startedAt: "2026-10-27T00:00:00.000Z",
-  });
+  record(statePath);
   status = await serviceStatus(runningIo.io, base);
   assert.equal(status.phase, "running");
   assert.equal(status.managed, true);
@@ -133,13 +146,49 @@ test("derives running, conflict and stopped phases", async (t) => {
   assert.equal(stopped.phase, "stopped");
 });
 
+test("a service on another endpoint is not reported as managed", async (t) => {
+  const { directory, statePath } = tempState(t, "reme-own-");
+  record(statePath, { endpoint: "http://127.0.0.1:2333" });
+  const { io } = fakeIO({
+    fetchHealth: async () => ({ ok: true, version: "0.4.0.9", error: "" }),
+  });
+  const status = await serviceStatus(io, {
+    endpoint: ENDPOINT,
+    statePath,
+    logPath: join(directory, "service.log"),
+  });
+  assert.equal(status.phase, "running");
+  assert.equal(status.managed, false);
+  assert.equal(status.pid, undefined);
+});
+
+test("a recycled pid that is no longer the service is not managed", async (t) => {
+  const { statePath } = tempState(t, "reme-pid-");
+  record(statePath);
+  const { io } = fakeIO({
+    fetchHealth: async () => ({ ok: true, version: "0.4.0.9", error: "" }),
+    processImage: async () => "node.exe",
+  });
+  assert.equal(
+    await ownsService(io, readServiceState(statePath), ENDPOINT),
+    false,
+  );
+  const { io: gone } = fakeIO({
+    probePid() {
+      throw new Error("ESRCH");
+    },
+  });
+  assert.equal(
+    await ownsService(gone, readServiceState(statePath), ENDPOINT),
+    false,
+  );
+});
+
 test("starts detached with the GBK-safe environment and records state", async (t) => {
-  const directory = mkdtempSync(join(tmpdir(), "reme-start-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const statePath = join(directory, "service.json");
+  const { directory, statePath } = tempState(t, "reme-start-");
   const { io, calls } = fakeIO();
-  const result = startService(io, {
-    endpoint: "http://127.0.0.1:2334",
+  const result = await startService(io, {
+    endpoint: ENDPOINT,
     workspaceDir: directory,
     pythonPath: "D:\\env\\python.exe",
     cliPath: "D:\\env\\Scripts\\reme.exe",
@@ -159,22 +208,49 @@ test("starts detached with the GBK-safe environment and records state", async (t
   assert.equal(persisted?.workspaceDir, directory);
 });
 
-test("stops the managed pid and clears the state file", async (t) => {
-  const directory = mkdtempSync(join(tmpdir(), "reme-stop-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const statePath = join(directory, "service.json");
-  writeServiceState(statePath, {
-    pid: 999,
-    endpoint: "http://127.0.0.1:2334",
+test("records nothing when the spawn fails", async (t) => {
+  const { directory, statePath } = tempState(t, "reme-spawn-");
+  const { io } = fakeIO({
+    async spawnService() {
+      throw new Error("spawn ENOENT");
+    },
+  });
+  const result = await startService(io, {
+    endpoint: ENDPOINT,
     workspaceDir: directory,
     pythonPath: "D:\\env\\python.exe",
-    command: "reme start",
-    startedAt: "2026-10-27T00:00:00.000Z",
+    cliPath: "D:\\missing\\reme.exe",
+    disableDreamCron: false,
+    statePath,
+    logPath: join(directory, "service.log"),
+    env: {},
   });
+  assert.equal(result.started, false);
+  assert.match(result.error, /ENOENT/);
+  assert.equal(readServiceState(statePath), undefined);
+});
+
+test("stops the managed pid and clears the state file", async (t) => {
+  const { directory, statePath } = tempState(t, "reme-stop-");
+  record(statePath, { pid: 999, workspaceDir: directory });
   const { io, calls } = fakeIO();
-  const stopped = stopService(io, { statePath });
+  const stopped = await stopService(io, { statePath, endpoint: ENDPOINT });
   assert.deepEqual(stopped, { stopped: true, pid: 999 });
   assert.deepEqual(calls.killTree, [999]);
   assert.equal(readServiceState(statePath), undefined);
-  assert.deepEqual(stopService(io, { statePath }), { stopped: false });
+  assert.deepEqual(await stopService(io, { statePath, endpoint: ENDPOINT }), {
+    stopped: false,
+    reason: "No service started by this plugin",
+  });
+});
+
+test("refuses to stop a service recorded for another endpoint", async (t) => {
+  const { statePath } = tempState(t, "reme-refuse-");
+  record(statePath, { endpoint: "http://127.0.0.1:2333" });
+  const { io, calls } = fakeIO();
+  const stopped = await stopService(io, { statePath, endpoint: ENDPOINT });
+  assert.equal(stopped.stopped, false);
+  assert.match(stopped.reason, /does not belong/);
+  assert.deepEqual(calls.killTree, []);
+  assert.ok(readServiceState(statePath), "the foreign record is left in place");
 });

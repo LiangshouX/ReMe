@@ -23,6 +23,13 @@ function stubManager() {
       cliPath: "",
       error: pythonPath ? "" : "Python interpreter path must be absolute",
     }),
+    health: async (endpoint, authToken) => ({
+      endpoint,
+      ok: false,
+      version: "",
+      error: authToken ? "auth token forwarded" : "",
+      checkedAt: "",
+    }),
   };
 }
 
@@ -89,4 +96,27 @@ test("gateway methods remain callable through the manager after remount", async 
   const check = await receiver.checkReme({ pythonPath: "" });
   assert.equal(check.installed, false);
   assert.match(check.error, /absolute/);
+});
+
+test("health keeps the single-input convention and forwards the token", async () => {
+  const { root } = await mounted();
+  const receiver = root.reflect.get("remeEnvGateway", false);
+  const source = Function.prototype.toString.call(
+    Object.getPrototypeOf(receiver).health,
+  );
+  const open = source.indexOf("(");
+  const close = source.indexOf(")", open + 1);
+  const parameters = source
+    .slice(open + 1, close)
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  assert.deepEqual(parameters, ["input"]);
+
+  const result = await receiver.health({
+    endpoint: "http://127.0.0.1:2334",
+    authToken: "secret",
+  });
+  assert.equal(result.endpoint, "http://127.0.0.1:2334");
+  assert.equal(result.error, "auth token forwarded");
 });

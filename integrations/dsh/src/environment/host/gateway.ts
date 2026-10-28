@@ -2,6 +2,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 
 import type {
+  ConnectionHealth,
   EnvSummary,
   InstallStatus,
   LlmTestResult,
@@ -12,6 +13,7 @@ import type {
   ServiceState,
 } from "../types.js";
 import type { ReMeEnvManager } from "./manager.js";
+import type { ServiceStopResult } from "./service.js";
 
 declare module "@deepseek-ai/cordis" {
   interface Context {
@@ -115,25 +117,49 @@ export class ReMeEnvGateway extends TypertRemoteService {
     );
   }
 
+  /**
+   * Probe the configured endpoint from this Host. The Environment hero and the
+   * service card both read Host results, so a browser on another machine cannot
+   * disagree with the Host about "local".
+   */
+  @Remote("health")
+  async health(
+    input: { endpoint?: string; authToken?: string } | undefined,
+  ): Promise<ConnectionHealth> {
+    return this.ctx.remeEnv.health(
+      input?.endpoint ?? "",
+      input?.authToken ?? "",
+    );
+  }
+
   /** Phase of the local ReMe service: running, conflict or stopped. */
   @Remote("serviceStatus")
   async serviceStatus(
-    input: { endpoint?: string } | undefined,
+    input: { endpoint?: string; authToken?: string } | undefined,
   ): Promise<ServiceState> {
-    return this.ctx.remeEnv.serviceStatus(input?.endpoint ?? "");
+    return this.ctx.remeEnv.serviceStatus(
+      input?.endpoint ?? "",
+      input?.authToken ?? "",
+    );
   }
 
   /** Spawn a detached `reme start`; poll serviceStatus until healthy. */
   @Remote("serviceStart")
   async serviceStart(
     input:
-      | { endpoint?: string; pythonPath?: string; workspaceDir?: string }
+      | {
+          endpoint?: string;
+          pythonPath?: string;
+          workspaceDir?: string;
+          authToken?: string;
+        }
       | undefined,
   ): Promise<ServiceStartResult> {
     return this.ctx.remeEnv.serviceStart(
       input?.endpoint ?? "",
       input?.pythonPath ?? "",
       input?.workspaceDir ?? "",
+      input?.authToken ?? "",
     );
   }
 
@@ -141,7 +167,7 @@ export class ReMeEnvGateway extends TypertRemoteService {
   @Remote("serviceStop")
   async serviceStop(
     input: { endpoint?: string } | undefined,
-  ): Promise<{ stopped: boolean; pid?: number }> {
+  ): Promise<ServiceStopResult> {
     return this.ctx.remeEnv.serviceStop(input?.endpoint ?? "");
   }
 

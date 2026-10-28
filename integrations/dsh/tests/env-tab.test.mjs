@@ -107,21 +107,11 @@ function texts(node, found = []) {
   return found;
 }
 
-async function mount() {
-  // The tab probes /health_check on mount; keep that hermetic.
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () =>
-    new Response(
-      JSON.stringify({
-        success: true,
-        metadata: {
-          health: { version: "0.4.0.9", healthy: true, components: {} },
-        },
-      }),
-      { status: 200, headers: { "Content-Type": "application/json" } },
-    );
-  const calls = { mutate: [] };
-  const snapshot = {
+async function mount(overrides = {}) {
+  const calls = { mutate: [], rpc: [] };
+  const listeners = new Set();
+  // A new object per change, the way the Host-backed form publishes a snapshot.
+  let snapshot = {
     status: "ready",
     writable: true,
     revision: 3,
@@ -132,10 +122,14 @@ async function mount() {
       autoStart: false,
       requestTimeoutMs: 10000,
       backgroundTimeoutMs: 3600000,
+      ...overrides,
     },
   };
   const scope = {
-    subscribe: () => () => undefined,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
     getSnapshot: () => snapshot,
     mutate: async (ops, revision) => {
       calls.mutate.push({ ops, revision });
@@ -143,10 +137,10 @@ async function mount() {
     },
   };
   const rpc = {
-    call: async (_path, method) => ({
-      ok: true,
-      value: RESPONSES[method] ?? null,
-    }),
+    call: async (_path, method, payload) => {
+      calls.rpc.push({ method, input: payload?.args?.input });
+      return { ok: true, value: RESPONSES[method] ?? null };
+    },
   };
 
   let renderer;
@@ -161,9 +155,14 @@ async function mount() {
   return {
     renderer,
     calls,
-    restore: () => {
-      globalThis.fetch = originalFetch;
+    setValue(patch) {
+      snapshot = {
+        ...snapshot,
+        value: { ...snapshot.value, ...patch },
+      };
+      for (const listener of listeners) listener();
     },
+    restore: () => listeners.clear(),
   };
 }
 
@@ -249,4 +248,72 @@ test("marks the suggested interpreter and explains why", async (t) => {
   assert.deepEqual(calls.mutate.at(-1)?.ops, [
     { op: "set", path: ["pythonPath"], value: ENVS[0].exe },
   ]);
+});
+
+test("drops .env drafts when the workspace changes", async (t) => {
+  const { renderer, calls, setValue, restore } = await mount();
+  t.after(restore);
+
+  await act(async () => {
+    buttonByText(renderer, envZh.expand).props.onClick();
+  });
+  const apiKey = () =>
+    renderer.root.findAll(
+      (node) => node.type === "input" && node.props.type === "password",
+    )[0];
+  await act(async () => {
+    apiKey().props.onChange({
+      target: { value: "sk-typed-for-first-workspace" },
+    });
+  });
+  assert.equal(apiKey().props.value, "sk-typed-for-first-workspace");
+
+  await act(async () => {
+    setValue({ remeWorkspaceDir: "/tmp/second-workspace" });
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+  // The draft belonged to the first workspace and is gone with it, so a save
+  // cannot carry a key typed for one workspace into another.
+  assert.equal(apiKey().props.value, "");
+
+  await act(async () => {
+    buttonByText(renderer, envZh.saveEnv).props.onClick();
+  });
+  const write = calls.rpc
+    .filter((call) => call.method === "remeEnv/writeEnv")
+    .at(-1);
+  assert.ok(write);
+  assert.equal(write.input.workspaceDir, "/tmp/second-workspace");
+  assert.deepEqual(write.input.values, {});
+});
+
+test("probes the service from the Host, never from the browser", async (t) => {
+  const original = globalThis.fetch;
+  let fetched = 0;
+  globalThis.fetch = async () => {
+    fetched += 1;
+    throw new Error("the tab must not fetch the service URL itself");
+  };
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  const { renderer, calls, restore } = await mount();
+  t.after(restore);
+  assert.equal(fetched, 0);
+  assert.match(
+    texts(renderer.toJSON()).join(" "),
+    /服务 · ReMe 0\.4\.0\.9/,
+    "the hero reports the version the Host service probe returned",
+  );
+  assert.ok(
+    calls.rpc.some((call) => call.method === "remeEnv/serviceStatus"),
+    "the hero reads its connection from the Host service probe",
+  );
+  assert.equal(
+    calls.rpc.some((call) => call.method === "remeEnv/health"),
+    false,
+    "a local endpoint is covered by the service probe already",
+  );
 });

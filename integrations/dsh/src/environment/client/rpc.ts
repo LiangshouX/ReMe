@@ -1,5 +1,6 @@
 import type { StatusRpc } from "../../client/status-page.js";
 import type {
+  ConnectionHealth,
   EnvSummary,
   InstallStatus,
   LlmTestResult,
@@ -20,6 +21,7 @@ export type EnvMethod =
   | "readEnv"
   | "writeEnv"
   | "testLlm"
+  | "health"
   | "serviceStatus"
   | "serviceStart"
   | "serviceStop"
@@ -81,6 +83,12 @@ export function parseEnvSummary(value: unknown): EnvSummary {
 
 export function parseLlmResult(value: unknown): LlmTestResult {
   return record(value, "LLM test") as unknown as LlmTestResult;
+}
+
+export function parseHealth(value: unknown): ConnectionHealth {
+  const body = record(value, "health");
+  if (typeof body.ok !== "boolean") throw new Error("Invalid health response");
+  return value as unknown as ConnectionHealth;
 }
 
 export function parseServiceState(value: unknown): ServiceState {

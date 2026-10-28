@@ -107,6 +107,7 @@ export function ReMeEnvironmentTab({
   const endpoint = value?.endpoint ?? "";
   const local = isLocalEndpoint(endpoint);
   const workspaceDir = value?.remeWorkspaceDir ?? "";
+  const authToken = value?.authToken ?? "";
   const [heroTick, setHeroTick] = useState(0);
 
   const writeSetting = useCallback(
@@ -141,15 +142,17 @@ export function ReMeEnvironmentTab({
     local,
     pythonPath: python.selectedPath,
     workspaceDir,
+    authToken,
   });
   // One health source per endpoint: the service probe already covers a local
-  // endpoint, so only a remote URL needs its own check.
+  // endpoint, so only a remote URL needs its own check. Both run on the Host,
+  // so the browser cannot disagree with it about what "local" means.
   const remote = useHealth({
+    rpc,
     endpoint,
     enabled: !local,
     tick: heroTick,
-    requestTimeoutMs: value?.requestTimeoutMs ?? 10000,
-    backgroundTimeoutMs: value?.backgroundTimeoutMs ?? 3600000,
+    authToken,
   });
   const connection: ConnectionState = local
     ? service.state.phase === "running"

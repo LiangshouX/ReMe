@@ -74,6 +74,32 @@ test("merges updates while preserving comments, order and unknown keys", () => {
   );
 });
 
+test("a duplicated key is rewritten everywhere, so parsing agrees", () => {
+  const existing = [
+    "LLM_API_KEY=old-key",
+    "LLM_MODEL_NAME=qwen3.7-plus",
+    "LLM_API_KEY=older-key",
+  ].join("\n");
+  const merged = mergeEnvFile(existing, { LLM_API_KEY: "new-key" });
+  assert.equal((merged.match(/^LLM_API_KEY=new-key$/gm) ?? []).length, 2);
+  // Parsing keeps the last occurrence, and that occurrence is the new value.
+  assert.equal(parseEnvFile(merged)["LLM_API_KEY"], "new-key");
+  assert.equal((merged.match(/^LLM_API_KEY=/gm) ?? []).length, 2);
+});
+
+test("keeps the file's own line ending", () => {
+  const merged = mergeEnvFile(
+    "LLM_BACKEND=openai\r\nEMBEDDING_API_KEY=EMPTY\r\n",
+    {
+      LLM_BACKEND: "dashscope",
+    },
+  );
+  assert.match(merged, /^LLM_BACKEND=dashscope\r$/m);
+  assert.equal(merged.includes("\n\n"), false);
+  assert.ok(merged.endsWith("\r\n"));
+  assert.equal(mergeEnvFile("", { A: "1" }), "A=1\n");
+});
+
 test("masks secrets down to the last four characters", () => {
   assert.equal(maskSecret("sk-abcdefgh"), "••••efgh");
   assert.equal(maskSecret("abc"), "••••");
