@@ -4,7 +4,7 @@
 
 This guide explains how to install, configure, and use `@agentscope-ai/reme-dsh-plugin` with DeepSeek Harness (DSH), including memory guidance injection, the `reme_search` tool, automatic memory, daily consolidation, and the ReMe Status page.
 
-The screenshots record an earlier local integration test against DSH `0.1.5-rc.2`; the supported releases are `0.1.7-rc.2`, `0.2.0-rc.2`, `0.2.1-alpha.2`, `0.2.1-alpha.4`, and `0.2.1-rc.2`. Both the interface and ReMe guidance are set to English, and the isolated DSH and ReMe workspaces contain only fictional Project Aurora data. No `.env` values, API keys, access tokens, or personal memories appear in the screenshots.
+The screenshots record an earlier local integration test against DSH `0.1.5-rc.2`; the supported releases are `0.1.7-rc.2`, `0.2.0-rc.2`, `0.2.1-alpha.2`, `0.2.1-alpha.4`, `0.2.1-rc.2`, and `0.2.2-alpha.2`. Both the interface and ReMe guidance are set to English, and the isolated DSH and ReMe workspaces contain only fictional Project Aurora data. No `.env` values, API keys, access tokens, or personal memories appear in the screenshots.
 
 ## 1. How the plugin works
 
@@ -26,8 +26,8 @@ The DSH adapter injects **usage guidance**, not every historical memory. Relevan
 ## 2. Requirements
 
 - ReMe is installed and its configuration exposes the `search`, `auto_memory`, and `auto_dream` jobs.
-- DeepSeek Harness `0.1.7-rc.2`, `0.2.0-rc.2`, `0.2.1-alpha.2`, `0.2.1-alpha.4`, or `0.2.1-rc.2`.
-- Node.js `^22.19.0` or `>=24.0.0`, matching the current DSH engine range.
+- DeepSeek Harness `0.1.7-rc.2`, `0.2.0-rc.2`, `0.2.1-alpha.2`, `0.2.1-alpha.4`, `0.2.1-rc.2`, or `0.2.2-alpha.2`.
+- Node.js `^22.19.0` or `>=24.0.0`, matching the current DSH engine range (DSH `0.2.2` needs Node 24.9 or newer).
 - The browser running DSH can reach the configured ReMe HTTP endpoint. Cross-machine deployments must also allow the DSH browser origin.
 
 The default ReMe endpoint is `http://127.0.0.1:2333`. ReMe HTTP does not use API-key authentication, so do not expose it directly to an untrusted network.
@@ -133,22 +133,19 @@ Deployment configuration also supports `REME_URL`, or `REME_HOST` together with 
 
 ## 4.1 Environment management (Environment tab)
 
-The **Environment** tab (inside **Plugins → ReMe bundle → reme-memory → Configure**) covers setup that otherwise needs a separate terminal: local Python discovery, installing ReMe, writing credentials, and starting the service. It applies to a local endpoint; a remote service URL only shows connection state.
+The **Environment** tab (inside **Plugins → ReMe bundle → reme-memory → Configure**) covers the setup that
+otherwise needs a separate terminal, on the machine that runs DSH:
 
-| Section            | Capability                                                                                                                                                                                                                                                              |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Service connection | Shows the configured URL and health; manual connection test                                                                                                                                                                                                             |
-| Local Python       | Discovers PEP 514 registry entries, the py launcher, PATH and conda (base and named environments), labels their origin and `reme-ai` state, and stores the selection in `pythonPath`                                                                                    |
-| ReMe dependency    | Checks `reme-ai` version, the `[core]` extras and the `reme` CLI for the selected interpreter; installs or upgrades `reme-ai[core]` with an optional package index, live log and cancel                                                                                 |
-| ReMe parameters    | Edits the workspace `.env`; secrets stay in that file and are shown masked (last four characters). Saving requires a non-empty `EMBEDDING_API_KEY`, because ReMe 0.4.0.x aborts startup without one (`EMPTY` is a valid placeholder). Provides an LLM connectivity test |
-| Service control    | Starts and stops the local ReMe service, showing PID, version and log; startup injects UTF-8 and `NO_PROXY`, sets `enable_logo=false`, and runs inside the workspace so `.env` discovery works                                                                          |
+| Step            | What it does                                                                                                              |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Local Python    | Finds PEP 514, `py` launcher, `PATH` and conda interpreters, labels each origin and `reme-ai` state, stores `pythonPath`  |
+| ReMe dependency | Checks `reme-ai`, the `[core]` extras and the `reme` CLI; installs or upgrades `reme-ai[core]` with a live log and cancel |
+| ReMe parameters | Edits the workspace `.env`; secrets stay in that file and are shown masked; provides an LLM connectivity test             |
+| Service control | Starts and stops the local ReMe service, showing PID, version and log                                                     |
 
-Notes:
-
-- `workspace_dir` is always absolute; the default workspace is `~/.reme`.
-- Services started here record their PID and launch arguments in `$DSH_HOME/reme-memory/service.json`, enabling a one-click stop. Instances started elsewhere are only observed.
-- Installing `reme-ai[core]` downloads large dependencies (about 15 minutes in our local test); the job runs in the Host and survives closing the configuration page.
-- The optional auto-start setting pulls the service up when DSH starts; it is off by default.
+See the [Environment management guide](https://github.com/agentscope-ai/ReMe/blob/main/integrations/dsh/docs/environment.md)
+for interpreter discovery and the recommendation rule, dependency installation, `.env` validation, connection
+testing, service lifetime, platform support and troubleshooting.
 
 ## 5. Memory context injection
 

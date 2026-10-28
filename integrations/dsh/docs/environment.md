@@ -1,0 +1,177 @@
+# Environment management
+
+The **Environment** tab is the setup surface for a local ReMe install. It finds a Python interpreter on the
+machine that runs DSH, installs `reme-ai[core]` into it, writes the workspace `.env`, and starts or stops the
+local ReMe service — the work that otherwise needs several terminals.
+
+Open it from **Plugins → ReMe bundle → reme-memory → Configure → Environment**.
+
+The tab manages a **loopback** endpoint (`http://127.0.0.1:…` or `http://localhost:…`). With a remote service
+URL it only reports whether that URL answers, and hides the local steps.
+
+Everything the tab reports comes from the DSH **Host**, not from the browser: Python discovery, file access,
+the LLM probe and the service health check all run on the Host machine. A browser on another machine therefore
+sees the Host's environment, and the hero and the service card can never disagree about it.
+
+## What each step does
+
+| Section         | Capability                                                                                                                                                                                             |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Local Python    | Discovers PEP 514 registry entries, the `py` launcher, `PATH` and conda (base and named environments), labels their origin and `reme-ai` state, and stores the selection in `pythonPath`               |
+| ReMe dependency | Checks the `reme-ai` version, the `[core]` extras and the `reme` CLI for the selected interpreter; installs or upgrades `reme-ai[core]` with an optional package index, a live log and cancel          |
+| ReMe parameters | Edits the workspace `.env`; secrets stay in that file and are shown masked. Saving requires a non-empty `EMBEDDING_API_KEY` (use `EMPTY` when vector search is off). Provides an LLM connectivity test |
+| Service control | Starts and stops the local ReMe service, showing PID, version and log; the launch injects UTF-8 and `NO_PROXY`, sets `enable_logo=false`, and runs inside the workspace so `.env` discovery works      |
+
+The hero summarises the same state as three chips — service, Python, ReMe — plus the endpoint, the detection
+time and the two refresh actions.
+
+## Python discovery
+
+ReMe needs **Python 3.11 or newer**. The tab probes these channels on the Host and keeps only interpreters that
+answered `--version`:
+
+- Windows: PEP 514 registry entries (`HKLM`/`HKCU`), the `py` launcher list, `PATH`, and `conda env list`.
+- macOS and Linux: `PATH`, `/usr/bin`, Homebrew and `pyenv` locations, and `conda env list`.
+
+Microsoft Store placeholder links under `WindowsApps` are skipped, because they are shell aliases rather than
+interpreters. When conda is present, named environments are listed both under `conda env list` and as
+interpreters, and the conda root is reported separately.
+
+Detection is cached for 60 seconds; **Refresh** (in the hero) probes again. The recommended interpreter is
+chosen in this order:
+
+1. A named conda environment (`base` excluded) that already has a supported `reme-ai`.
+2. Another interpreter that already has a supported `reme-ai`.
+3. Any named conda environment, which is ready for a ReMe install.
+4. The first usable interpreter.
+
+Hover the **recommended** tag to see which rule applied. Picking another interpreter writes `pythonPath` and
+nothing else; leaving it unset keeps following the recommendation. The list shows six rows and expands on
+demand, with a filter over version, origin and path.
+
+## ReMe dependency
+
+The check asks the selected interpreter three questions and reports them as metrics:
+
+- `reme-ai` metadata version (`importlib.metadata.version("reme-ai")`), and whether it satisfies the minimum
+  this integration targets.
+- `[core]` extras: whether `import agentscope` works. Without it, `auto_memory` and `auto_dream` are unavailable.
+- `reme` CLI: the console script beside the interpreter, or the Python wrapper fallback used at start time.
+
+**Install reme-ai[core]** runs `python -m pip install reme-ai[core]`, optionally with an upgrade and a package
+index (PyPI, Tsinghua, Aliyun). Large wheels are downloaded on first use; expect 5–20 minutes depending on the
+network.
+
+The installation is a Host-owned job:
+
+- It keeps running when the configuration page closes, and reopening the tab restores it for the same
+  interpreter.
+- Progress is polled by job id, so a second installation for another interpreter cannot replace what you see.
+- **Cancel** stops pip and its build children, and the interpreter stays locked until the process has actually
+  exited.
+- The log is written to `$DSH_HOME/reme-memory/install-<job>.log` and its tail is shown in place.
+- When the plugin unloads, running jobs are stopped.
+
+## Workspace `.env`
+
+ReMe reads credentials from the `.env` in the workspace directory at service start; the tab never stores them in
+DSH settings.
+
+| Group     | Keys                                                                                   |
+| --------- | -------------------------------------------------------------------------------------- |
+| LLM       | `LLM_BACKEND`, `LLM_MODEL_NAME`, `LLM_API_KEY`, `LLM_BASE_URL`                         |
+| Embedding | `EMBEDDING_BACKEND`, `EMBEDDING_MODEL_NAME`, `EMBEDDING_API_KEY`, `EMBEDDING_BASE_URL` |
+
+- The workspace directory defaults to `~/.reme` and must be absolute; changing it reloads the `.env` it points at.
+- API keys are write-only: the Host returns a mask (last four characters) and a blank field means “keep the
+  stored key”. Leaving a key untouched never rewrites it.
+- Emptying a non-secret field and saving **clears** it. Only fields you edited are written, so the rest of the
+  file keeps its comments, unknown keys and order.
+- Saving validates the whole merged file, not just the values you typed: ReMe 0.4.0.x instantiates the embedding
+  component unconditionally, so `EMBEDDING_API_KEY` must be non-empty even without vector search (`EMPTY` is the
+  documented placeholder). A duplicated key is rewritten in every position, and the file keeps its own line
+  ending.
+- **Test LLM connection** runs a one-token `chat/completions` request from inside the workspace with the selected
+  interpreter, and adds a hint for `401`/`403` (key), `404` (model or base URL) and network errors.
+- Drafts are bound to the workspace they were typed in: switching the workspace drops them, so a key typed for
+  one workspace cannot be saved into another.
+
+## Connection testing
+
+**Test connection** in the hero asks the Host to `POST /health_check` on the configured endpoint. A healthy answer
+must contain a ReMe health report, so a generic HTTP server that answers `200` with `{}` is not reported as a
+running ReMe service. When the settings carry an `authToken`, the Host sends it as `Authorization: Bearer`, scoped
+to that endpoint.
+
+## Service lifetime
+
+Starting the service here is equivalent to running `reme start` in a terminal — with one deliberate difference:
+**the service outlives DSH**. Closing DSH does not stop it, and stopping it is an explicit action in the tab.
+
+That is why the plugin does not hand the service to DSH's local subprocess provider, which terminates the
+processes it manages when the Host exits. The plugin owns a small service adapter instead:
+
+- The launch is recorded in `$DSH_HOME/reme-memory/service.json` (pid, endpoint, workspace, command, start time)
+  **after** the OS acknowledged the spawn, so a missing interpreter leaves no state behind.
+- A service is reported as managed — and offered a **Stop** button — only when the record matches the endpoint on
+  screen, the pid is still alive, and its image is still a Python or `reme` executable. A record for port 2333
+  never claims a service on port 2444, and a recycled pid is not mistaken for this service.
+- **Stop** tree-kills the recorded process (on Windows `taskkill /T /F`) and clears the record. A service started
+  elsewhere stays untouched and is only observed.
+- **Start** is serialized: two requests cannot spawn two services, and the second observes the first launch.
+- **Auto-start** (`autoStart`, off by default) pulls the service up when DSH starts, if it is not already running.
+
+Python probes and pip installs are bounded Host operations; the service is the only intentionally detached
+process.
+
+## Platform support
+
+| Area          | Notes                                                                                                                                                           |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| DSH           | `0.1.7-rc.2`, `0.2.0-rc.2`, `0.2.1-alpha.2`, `0.2.1-alpha.4`, `0.2.1-rc.2`, `0.2.2-alpha.2`                                                                     |
+| Node.js       | `^22.19.0` or `>=24.0.0`; current DSH releases need Node 24.9 or newer, and the compatibility matrix is validated with Node 24.16                               |
+| Windows       | Tested on Windows 11 with Miniconda: registry/PATH/conda discovery, `tasklist`/`taskkill` for identity and stop, `PYTHONUTF8`/`PYTHONIOENCODING` for pip output |
+| macOS / Linux | Discovery, detached start and `SIGTERM` stop are covered by unit tests; documented but less exercised on real machines than Windows                             |
+
+## Troubleshooting
+
+**No usable Python found.** Install Miniconda or any Python 3.11+, then press **Refresh**. Store placeholders
+are filtered by design, so install a real distribution instead of the Store alias.
+
+**The selected interpreter is not in the list.** The tab shows it with a “not detected” tag and still uses it.
+Refresh, or pick a detected interpreter.
+
+**Installation fails.** Open the log tail: missing wheels, a stale proxy or a restricted network usually show
+there. Try a mirror. In a conda environment `pip` works, but a dedicated environment avoids dependency conflicts
+with other projects.
+
+**Saving `.env` is refused.** `LLM_API_KEY` and `EMBEDDING_API_KEY` must both be non-empty in the saved file;
+use `EMPTY` for the embedding key when vector search is off. An explicit clear of a required key is refused, and
+the file is left unchanged.
+
+**The service reports “Port occupied”.** Something else listens on the endpoint. Change the port in the service
+URL (Memory settings) or stop the other program.
+
+**The service does not become healthy.** The Start action polls for 90 seconds and then reports a timeout. Use
+**View log** (`$DSH_HOME`-independent: the workspace `service.log`) for the startup trace — a missing `reme-ai`,
+an invalid `.env`, or a port conflict all appear there.
+
+**The service shows as foreign.** It was started outside the plugin, so it is observed but not managed. Stop it
+in its own terminal if you want the tab to manage the next launch.
+
+**Stop is disabled.** The running service does not belong to this endpoint, or its record is gone. Restart it
+from the tab to make it managed.
+
+**LLM test fails.** The result distinguishes `401`/`403` (key), `404` (model name or base URL) and network
+errors. The probe reads the workspace `.env`, so save before testing.
+
+## Where the code lives
+
+```text
+integrations/dsh/src/environment/
+├── types.ts          shared, browser-safe RPC types
+├── host/             detection, install, service adapter, manager, gateway
+└── client/           the tab, one module per step, copy and styles
+```
+
+The Host modules are the only place that touches processes or files; the client renders what the Host returns.

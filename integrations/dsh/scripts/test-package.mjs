@@ -89,6 +89,7 @@ try {
     "dist/client.js",
     "cordis.patch.yml",
     "README.md",
+    "docs/environment.md",
     "figures/reme-status-overview.png",
   ]) {
     assert.ok(files.has(file), `missing ${file}`);

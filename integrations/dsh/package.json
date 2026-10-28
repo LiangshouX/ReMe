@@ -20,6 +20,7 @@
     "cordis.patch.yml",
     "README.md",
     "README_ZH.md",
+    "docs",
     "figures"
   ],
   "dsh": {
