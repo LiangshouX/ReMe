@@ -116,8 +116,9 @@ function texts(node, found = []) {
   return found;
 }
 
-async function mount(overrides = {}) {
+async function mount(overrides = {}, options = {}) {
   const calls = { mutate: [], rpc: [] };
+  const responses = { ...RESPONSES, ...(options.responses ?? {}) };
   const listeners = new Set();
   // A new object per change, the way the Host-backed form publishes a snapshot.
   let snapshot = {
@@ -142,13 +143,13 @@ async function mount(overrides = {}) {
     getSnapshot: () => snapshot,
     mutate: async (ops, revision) => {
       calls.mutate.push({ ops, revision });
-      return true;
+      return options.mutate ? options.mutate() : true;
     },
   };
   const rpc = {
     call: async (_path, method, payload) => {
       calls.rpc.push({ method, input: payload?.args?.input });
-      return { ok: true, value: RESPONSES[method] ?? null };
+      return { ok: true, value: responses[method] ?? null };
     },
   };
 
@@ -171,7 +172,13 @@ async function mount(overrides = {}) {
       };
       for (const listener of listeners) listener();
     },
-    restore: () => listeners.clear(),
+    restore: () => {
+      // Unmount so the effect cleanup paths (aborts, timers) actually run.
+      act(() => {
+        renderer.unmount();
+      });
+      listeners.clear();
+    },
   };
 }
 
@@ -351,4 +358,83 @@ test("probes the service from the Host, never from the browser", async (t) => {
     false,
     "a local endpoint is covered by the service probe already",
   );
+});
+
+test("a remote endpoint never runs the local setup steps", async (t) => {
+  const { calls, restore } = await mount(
+    { endpoint: "http://10.0.0.5:2333" },
+    {
+      responses: {
+        "remeEnv/health": {
+          endpoint: "http://10.0.0.5:2333",
+          ok: false,
+          version: "",
+          error: "unreachable",
+          checkedAt: new Date().toISOString(),
+        },
+      },
+    },
+  );
+  t.after(restore);
+  const methods = calls.rpc.map((call) => call.method);
+  assert.ok(
+    methods.includes("remeEnv/health"),
+    "a remote endpoint is only health-checked",
+  );
+  for (const local of [
+    "remeEnv/python",
+    "remeEnv/checkReme",
+    "remeEnv/readEnv",
+    "remeEnv/serviceStatus",
+  ])
+    assert.equal(methods.includes(local), false, `${local} must not run`);
+});
+
+test("shows why Stop left the service alone", async (t) => {
+  const { renderer, restore } = await mount(
+    {},
+    {
+      responses: {
+        "remeEnv/serviceStatus": {
+          phase: "running",
+          managed: true,
+          pid: 98820,
+          version: "0.4.0.9",
+          endpoint: "http://127.0.0.1:2333",
+          logPath: "C:\\Users\\test\\.reme\\service.log",
+        },
+        "remeEnv/serviceStop": {
+          stopped: false,
+          reason: "The recorded process identity could not be verified",
+        },
+      },
+    },
+  );
+  t.after(restore);
+  await act(async () => {
+    buttonByText(renderer, envZh.stopService).props.onClick();
+  });
+  await act(async () => {
+    buttonByText(renderer, envZh.stopService).props.onClick();
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+  assert.match(texts(renderer.toJSON()).join(" "), /could not be verified/);
+});
+
+test("surfaces a rejected settings write", async (t) => {
+  const { renderer, restore } = await mount({}, { mutate: async () => false });
+  t.after(restore);
+  const checkbox = renderer.root.findAll(
+    (node) => node.type === "input" && node.props.type === "checkbox",
+  )[0];
+  assert.ok(checkbox);
+  await act(async () => {
+    checkbox.props.onChange({ target: { checked: true } });
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+  assert.match(texts(renderer.toJSON()).join(" "), /设置未保存/);
 });

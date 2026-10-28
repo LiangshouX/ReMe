@@ -483,11 +483,15 @@ export async function detectPythonEnvs(io: DetectIO): Promise<PythonDetection> {
       const first = windows
         ? await io.run("where.exe", ["python"], { timeoutMs: 5_000 })
         : await io.run("which", ["-a", "python3"], { timeoutMs: 5_000 });
+      // A non-zero exit just means "no match"; a spawn/timeout error is a real
+      // diagnostic and must not disappear from the report.
+      if (first.error) errors.push(`python: ${safeError(first.error)}`);
       let stdout = first.stdout;
       if (!windows) {
         const extra = await io.run("which", ["-a", "python"], {
           timeoutMs: 5_000,
         });
+        if (extra.error) errors.push(`python: ${safeError(extra.error)}`);
         stdout = `${stdout}\n${extra.stdout}`;
       }
       for (const exe of parsePathList(stdout)) {

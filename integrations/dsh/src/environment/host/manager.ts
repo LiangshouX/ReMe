@@ -9,7 +9,11 @@ import { checkReme, MINIMUM_REME, remeVersionAtLeast } from "./reme.js";
 import { createNodeRunner } from "./runner.js";
 import {
   createServiceIO,
+  processAlive,
   readServiceState,
+  removeServiceState,
+  serviceEndpointKey,
+  serviceOwnership,
   serviceStatus,
   startService,
   stopService,
@@ -181,21 +185,30 @@ export class ReMeEnvManager {
   async serviceStatus(endpoint: string, authToken = ""): Promise<ServiceState> {
     const endpointValue = this.endpoint(endpoint);
     const persisted = readServiceState(this.serviceStatePath);
+    // A malformed record must not turn the log path into a relative one.
+    let logDir = resolveWorkspaceDir("", homedir());
+    const recordedDir = persisted?.workspaceDir?.trim() ?? "";
+    if (recordedDir) {
+      try {
+        logDir = resolveWorkspaceDir(recordedDir, homedir());
+      } catch {
+        // Keep the default log directory.
+      }
+    }
     const status = await serviceStatus(this.serviceIO, {
       endpoint: endpointValue,
       statePath: this.serviceStatePath,
       authToken,
-      logPath: join(
-        persisted?.workspaceDir ?? resolveWorkspaceDir("", homedir()),
-        "service.log",
-      ),
+      logPath: join(logDir, "service.log"),
     });
     if (this.starting?.endpoint === endpointValue) {
-      // Running is the happy end; stopped without a live pid means the launch
-      // died before it ever listened, so a retry must not be blocked by the
-      // grace period. A stopped status *with* a pid is a service still booting.
+      // Running and conflict both mean the port answered: the launch is no
+      // longer "in flight". Stopped without a live pid means it died before it
+      // ever listened, so a retry must not be blocked either. A stopped status
+      // *with* a pid is a service still booting.
       if (
         status.phase === "running" ||
+        status.phase === "conflict" ||
         (status.phase === "stopped" && status.pid === undefined)
       )
         this.starting = undefined;
@@ -224,14 +237,20 @@ export class ReMeEnvManager {
     return run;
   }
 
-  /** Stop the plugin-managed service; a foreign service stays untouched. */
-  async serviceStop(endpoint: string): Promise<ServiceStopResult> {
-    const result = await stopService(this.serviceIO, {
-      statePath: this.serviceStatePath,
-      endpoint: this.endpoint(endpoint),
-    });
-    if (result.stopped) this.starting = undefined;
-    return result;
+  /**
+   * Stop the plugin-managed service; a foreign service stays untouched. Stop
+   * joins the start queue, so a request that arrives while a launch is still
+   * being recorded waits for it and then stops that launch instead of
+   * reporting "nothing started".
+   */
+  serviceStop(endpoint: string): Promise<ServiceStopResult> {
+    const endpointValue = this.endpoint(endpoint);
+    const run = this.startQueue.then(() => this.stopLocked(endpointValue));
+    this.startQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   /** Tail of the workspace service log. */
@@ -288,6 +307,16 @@ export class ReMeEnvManager {
     return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, "")}`;
   }
 
+  private async stopLocked(endpointValue: string): Promise<ServiceStopResult> {
+    const result = await stopService(this.serviceIO, {
+      statePath: this.serviceStatePath,
+      endpoint: endpointValue,
+    });
+    if (result.stopped && this.starting?.endpoint === endpointValue)
+      this.starting = undefined;
+    return result;
+  }
+
   private async startLocked(
     endpoint: string,
     pythonPath: string,
@@ -301,13 +330,14 @@ export class ReMeEnvManager {
     const starting = this.starting;
     if (starting && Date.now() - starting.at < START_GRACE_MS) {
       if (starting.endpoint === endpointValue)
+        // A genuine launch is in flight. Observing it is not an error: the
+        // client keeps polling just as the first request does.
         return {
           started: false,
           alreadyRunning: true,
           command: "",
           logPath,
           startedAt: now,
-          error: "The service is already starting for this endpoint",
         };
       // The service record is per install, not per endpoint; spawning a second
       // endpoint's service now would overwrite the first one's record and
@@ -332,22 +362,23 @@ export class ReMeEnvManager {
         startedAt: now,
         ...(current.version ? { version: current.version } : {}),
       };
-    if (current.phase === "conflict")
-      return {
-        started: false,
-        alreadyRunning: false,
-        command: "",
-        logPath,
-        startedAt: now,
-        error: "Another process is already listening on this endpoint",
-      };
-    // A previous launch that never became healthy may still be alive. Stop it
-    // before spawning a replacement, so it cannot be orphaned when the state
-    // record is overwritten.
-    if (current.pid !== undefined) {
+    if (current.phase === "conflict") {
+      // The port is answered by something that is not a healthy service. A
+      // provable launch of ours (still booting or rejecting our token) is
+      // stopped and replaced; anything else is left alone.
+      if (!current.managed)
+        return {
+          started: false,
+          alreadyRunning: false,
+          command: "",
+          logPath,
+          startedAt: now,
+          error: "Another process is already listening on this endpoint",
+        };
       const previous = await stopService(this.serviceIO, {
         statePath: this.serviceStatePath,
         endpoint: endpointValue,
+        ownership: "owned",
       });
       if (!previous.stopped)
         return {
@@ -360,6 +391,64 @@ export class ReMeEnvManager {
             previous.reason ?? "unknown reason"
           }`,
         };
+    }
+    // A record for a *different* endpoint that is still alive would be
+    // overwritten by the new launch, leaving that endpoint unable to stop it.
+    // Only a provably owned process blocks the new start; an unprovable record
+    // is stale and is discarded, just like the same-endpoint case below.
+    const recorded = readServiceState(this.serviceStatePath);
+    if (
+      recorded &&
+      recorded.pid !== undefined &&
+      serviceEndpointKey(recorded.endpoint) !==
+        serviceEndpointKey(endpointValue) &&
+      processAlive(this.serviceIO, recorded.pid)
+    ) {
+      const other = await serviceOwnership(
+        this.serviceIO,
+        recorded,
+        recorded.endpoint,
+      );
+      if (other === "owned")
+        return {
+          started: false,
+          alreadyRunning: false,
+          command: "",
+          logPath,
+          startedAt: now,
+          error: `A service for ${recorded.endpoint} is still running; stop it from that endpoint first`,
+        };
+      removeServiceState(this.serviceStatePath);
+    }
+    // A previous launch that never became healthy may still be alive. Stop it
+    // when ownership is proven; when it cannot be proven, drop the stale record
+    // without killing anything so a recycled pid is never touched.
+    if (current.pid !== undefined) {
+      const ownership = await serviceOwnership(
+        this.serviceIO,
+        recorded,
+        endpointValue,
+      );
+      if (ownership === "owned") {
+        const previous = await stopService(this.serviceIO, {
+          statePath: this.serviceStatePath,
+          endpoint: endpointValue,
+          ownership,
+        });
+        if (!previous.stopped)
+          return {
+            started: false,
+            alreadyRunning: false,
+            command: "",
+            logPath,
+            startedAt: now,
+            error: `A previous launch could not be stopped: ${
+              previous.reason ?? "unknown reason"
+            }`,
+          };
+      } else {
+        removeServiceState(this.serviceStatePath);
+      }
     }
     const path = pythonPath.trim();
     if (!path)

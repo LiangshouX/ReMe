@@ -3,6 +3,7 @@ import { closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 
 import type { InstallPhase, InstallRequest, InstallStatus } from "../types.js";
+import { openAppendLog } from "./log.js";
 import { isAbsolutePath } from "./paths.js";
 
 export interface InstallChild {
@@ -57,12 +58,17 @@ export function tailLog(path: string, maxLines = 30, maxBytes = 8192): string {
     fd = openSync(path, "r");
     const size = fstatSync(fd).size;
     const length = Math.min(size, maxBytes);
+    const start = size - length;
     const buffer = Buffer.alloc(length);
-    readSync(fd, buffer, 0, length, Math.max(0, size - length));
-    const text = buffer
-      .toString("utf8")
-      .replaceAll("\r\n", "\n")
-      .replaceAll("\r", "\n");
+    readSync(fd, buffer, 0, length, start);
+    let text = buffer.toString("utf8");
+    if (start > 0) {
+      // The cut may be mid-line and even mid-character; drop that partial line
+      // so the tail never starts with a replacement character.
+      const firstBreak = text.indexOf("\n");
+      text = firstBreak >= 0 ? text.slice(firstBreak + 1) : text;
+    }
+    text = text.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
     return text
       .split("\n")
       .filter((line) => line.trim().length > 0)
@@ -87,7 +93,7 @@ export function createInstallSpawner(
 ): InstallSpawner {
   return {
     start({ exe, args, logPath }) {
-      const fd = openSync(logPath, "a");
+      const fd = openAppendLog(logPath);
       let child: ReturnType<typeof spawn>;
       try {
         child = spawn(exe, args, {

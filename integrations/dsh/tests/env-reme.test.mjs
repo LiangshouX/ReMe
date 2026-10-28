@@ -181,8 +181,9 @@ function fakeSpawner() {
         onExit(callback) {
           child.exit = callback;
         },
-        kill() {
+        kill(force = false) {
           child.killed = true;
+          child.force = force;
         },
       };
       children.push(child);

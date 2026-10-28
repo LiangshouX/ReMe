@@ -11,6 +11,7 @@ import {
   ownsService,
   parseLocalEndpoint,
   readServiceState,
+  serviceOwnership,
   serviceStatus,
   startService,
   stopService,
@@ -34,11 +35,18 @@ function fakeIO(overrides = {}) {
     },
     probePid() {},
     processImage: async () => "python.exe",
+    processCommandLine: async () => "",
     exists: () => true,
     platform: "win32",
     ...overrides,
   };
   return { io, calls };
+}
+
+/** The command line a launch for `statePath` would actually have. */
+function commandFor(statePath, port = 2334) {
+  const state = readServiceState(statePath);
+  return `reme start workspace_dir=${state.workspaceDir} service.port=${port}`;
 }
 
 function tempState(t, prefix) {
@@ -77,6 +85,9 @@ test("accepts only loopback HTTP endpoints and validates the port", () => {
     () => parseLocalEndpoint("https://127.0.0.1:2333"),
     /http:\/\//,
   );
+  // The launch binds service.host=127.0.0.1, so an IPv6 loopback endpoint
+  // would start a service that can never answer it.
+  assert.throws(() => parseLocalEndpoint("http://[::1]:2333"), /IPv4/);
 });
 
 test("builds reme start with the workspace cwd contract", () => {
@@ -140,6 +151,7 @@ test("derives running, conflict and stopped phases", async (t) => {
   assert.equal(status.version, "0.4.0.9");
 
   record(statePath);
+  runningIo.io.processCommandLine = async () => commandFor(statePath);
   status = await serviceStatus(runningIo.io, base);
   assert.equal(status.phase, "running");
   assert.equal(status.managed, true);
@@ -176,12 +188,30 @@ test("a loopback alias still identifies the service this plugin started", async 
   record(statePath, { endpoint: "http://localhost:2334/" });
   const { io } = fakeIO({
     fetchHealth: async () => ({ ok: true, version: "0.4.0.9", error: "" }),
+    processCommandLine: async () => commandFor(statePath),
   });
   const status = await serviceStatus(io, {
     endpoint: ENDPOINT,
     statePath,
     logPath: join(directory, "service.log"),
   });
+  assert.equal(status.managed, true);
+  assert.equal(status.pid, 777);
+});
+
+test("a conflict still identifies a provably owned service", async (t) => {
+  const { directory, statePath } = tempState(t, "reme-conflict-");
+  record(statePath);
+  const { io } = fakeIO({
+    portOpen: async () => true,
+    processCommandLine: async () => commandFor(statePath),
+  });
+  const status = await serviceStatus(io, {
+    endpoint: ENDPOINT,
+    statePath,
+    logPath: join(directory, "service.log"),
+  });
+  assert.equal(status.phase, "conflict");
   assert.equal(status.managed, true);
   assert.equal(status.pid, 777);
 });
@@ -215,6 +245,40 @@ test("a recycled pid that is no longer the service is not managed", async (t) =>
       await ownsService(unreadable, readServiceState(statePath), ENDPOINT),
       false,
       `image ${JSON.stringify(image)} must not be owned`,
+    );
+  }
+  // A Python image whose command line describes another launch is foreign,
+  // not ours; an unreadable command line is unproven, not ownership.
+  const { io: otherLaunch } = fakeIO({
+    processCommandLine: async () => "python -m http.server 2334",
+  });
+  assert.equal(
+    await serviceOwnership(otherLaunch, readServiceState(statePath), ENDPOINT),
+    "foreign",
+  );
+  const { io: unproven } = fakeIO();
+  assert.equal(
+    await serviceOwnership(unproven, readServiceState(statePath), ENDPOINT),
+    "unknown",
+  );
+  assert.equal(
+    await ownsService(unproven, readServiceState(statePath), ENDPOINT),
+    false,
+  );
+  // Matching is boundary-aware: a longer workspace path or port is another
+  // launch, not this one.
+  const state = readServiceState(statePath);
+  for (const command of [
+    `reme start workspace_dir=${state.workspaceDir}2 service.port=2334`,
+    `reme start workspace_dir=${state.workspaceDir} service.port=23340`,
+  ]) {
+    const { io: longer } = fakeIO({
+      processCommandLine: async () => command,
+    });
+    assert.equal(
+      await serviceOwnership(longer, state, ENDPOINT),
+      "foreign",
+      command,
     );
   }
 });
@@ -286,7 +350,9 @@ test("records nothing when the spawn fails", async (t) => {
 test("stops the managed pid and clears the state file after it exits", async (t) => {
   const { directory, statePath } = tempState(t, "reme-stop-");
   record(statePath, { pid: 999, workspaceDir: directory });
-  const { io, calls } = fakeIO();
+  const { io, calls } = fakeIO({
+    processCommandLine: async () => commandFor(statePath),
+  });
   let running = true;
   io.probePid = () => {
     if (!running) throw new Error("ESRCH");
@@ -313,7 +379,9 @@ test("stops the managed pid and clears the state file after it exits", async (t)
 test("escalates to SIGKILL and keeps the record when the service never exits", async (t) => {
   const { directory, statePath } = tempState(t, "reme-stubborn-");
   record(statePath, { pid: 999, workspaceDir: directory });
-  const { io, calls } = fakeIO();
+  const { io, calls } = fakeIO({
+    processCommandLine: async () => commandFor(statePath),
+  });
   const stopped = await stopService(io, {
     statePath,
     endpoint: ENDPOINT,
@@ -338,6 +406,17 @@ test("refuses to stop a service recorded for another endpoint", async (t) => {
   assert.match(stopped.reason, /does not belong/);
   assert.deepEqual(calls.killTree, []);
   assert.ok(readServiceState(statePath), "the foreign record is left in place");
+});
+
+test("refuses to stop a process whose identity cannot be verified", async (t) => {
+  const { statePath } = tempState(t, "reme-unknown-");
+  record(statePath);
+  const { io, calls } = fakeIO(); // image readable, command line not
+  const stopped = await stopService(io, { statePath, endpoint: ENDPOINT });
+  assert.equal(stopped.stopped, false);
+  assert.match(stopped.reason, /could not be verified/);
+  assert.deepEqual(calls.killTree, []);
+  assert.equal(readServiceState(statePath)?.pid, 777);
 });
 
 /* ------------------------------------------------------------------ */
@@ -402,6 +481,7 @@ test("real IO spawns, identifies and stops a detached process", async (t) => {
   assert.ok(pid !== undefined && pid > 1);
   assert.doesNotThrow(() => io.probePid(pid));
   assert.doesNotMatch(await io.processImage(pid), /^$/);
+  assert.match(await io.processCommandLine(pid), /node/i);
 
   io.killTree(pid);
   const deadline = Date.now() + 5_000;

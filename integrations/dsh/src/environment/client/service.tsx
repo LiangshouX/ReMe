@@ -289,6 +289,12 @@ export function ServiceSection({
 }): JSX.Element {
   const { state, stopping, stopError, log } = control;
   const [confirming, setConfirming] = useState(false);
+  // A conflict can still be our own unhealthy service (booting, wrong token);
+  // offer the same Stop affordance instead of leaving the tab without a way
+  // out other than editing the record by hand.
+  const canStop =
+    state.phase === "running" ||
+    (state.phase === "conflict" && state.data?.managed === true);
 
   return (
     <section className="reme-env-card">
@@ -338,11 +344,13 @@ export function ServiceSection({
             {t("recheck")}
           </button>
         </div>
-        {state.phase === "running" ? (
+        {state.phase === "running" || state.phase === "conflict" ? (
           <p className="reme-settings-muted">
             {state.data?.managed
               ? fill(t("managedNote"), { pid: state.data?.pid ?? "" })
-              : t("foreignNote")}
+              : state.phase === "running"
+              ? t("foreignNote")
+              : null}
           </p>
         ) : null}
         {state.phase === "conflict" ? (
@@ -359,7 +367,7 @@ export function ServiceSection({
           </p>
         ) : null}
         <div className="reme-env-cta">
-          {state.phase === "running" ? (
+          {canStop ? (
             confirming ? (
               <div className="reme-env-confirm">
                 <p>{t("stopConfirm")}</p>

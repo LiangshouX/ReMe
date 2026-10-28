@@ -32,7 +32,7 @@ function isLocalEndpoint(endpoint: string): boolean {
     const url = new URL(endpoint);
     return (
       url.protocol === "http:" &&
-      ["127.0.0.1", "localhost", "[::1]", "::1"].includes(url.hostname)
+      ["127.0.0.1", "localhost"].includes(url.hostname)
     );
   } catch {
     return false;

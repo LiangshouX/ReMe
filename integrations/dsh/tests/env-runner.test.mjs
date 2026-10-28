@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {
+  closeSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
+import { createInstallSpawner } from "../dist/environment/host/install.js";
+import { openAppendLog } from "../dist/environment/host/log.js";
 import { createNodeRunner } from "../dist/environment/host/runner.js";
 
 test("a timeout settles with an explicit error instead of hanging", async () => {
@@ -27,4 +39,38 @@ test("a child that exits on SIGTERM is still reported as a timeout", async () =>
     { timeoutMs: 200 },
   );
   assert.match(result.error ?? "", /timed out after 200 ms/);
+});
+
+test("the real install spawner starts and stops a process", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "reme-spawner-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const spawner = createInstallSpawner({ PATH: process.env.PATH });
+  const logPath = join(directory, "install.log");
+  const child = spawner.start({
+    exe: process.execPath,
+    args: ["-e", "setInterval(() => {}, 1000)"],
+    logPath,
+  });
+  assert.ok(child.pid !== undefined && child.pid > 1);
+
+  const exited = new Promise((resolve) => child.onExit(resolve));
+  child.kill();
+  const outcome = await Promise.race([
+    exited,
+    new Promise((resolve) => setTimeout(() => resolve("timeout"), 5_000)),
+  ]);
+  assert.notEqual(outcome, "timeout", "the install process must actually exit");
+  assert.match(readFileSync(logPath, "utf8"), /^$/);
+});
+
+test("an oversized log is rotated before the next append", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "reme-log-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, "install.log");
+  writeFileSync(path, "x".repeat(200));
+
+  const fd = openAppendLog(path, 100);
+  closeSync(fd);
+  assert.equal(readFileSync(`${path}.1`, "utf8").length, 200);
+  assert.equal(statSync(path).size, 0);
 });

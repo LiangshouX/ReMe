@@ -3,7 +3,6 @@ import {
   closeSync,
   existsSync,
   mkdirSync,
-  openSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -14,6 +13,7 @@ import { basename, dirname } from "node:path";
 
 import { safeError } from "../../endpoint.js";
 import type { ServiceStartResult, ServiceState } from "../types.js";
+import { openAppendLog } from "./log.js";
 
 /**
  * The local ReMe service is a *detached* process: it outlives DSH, which is the
@@ -65,6 +65,8 @@ export interface ServiceIO {
   probePid(pid: number): void;
   /** OS image name of a pid, or "" when it cannot be read. */
   processImage(pid: number): Promise<string>;
+  /** Full command line of a pid, or "" when it cannot be read. */
+  processCommandLine?(pid: number): Promise<string>;
   exists(path: string): boolean;
   platform: string;
 }
@@ -109,9 +111,11 @@ export function parseLocalEndpoint(endpoint: string): {
     throw new TypeError(
       "Local service management requires an http:// endpoint",
     );
-  if (!["127.0.0.1", "localhost", "[::1]", "::1"].includes(url.hostname))
+  // The service is launched with `service.host=127.0.0.1`; accepting an IPv6
+  // loopback would spawn a process that can never answer that endpoint.
+  if (!["127.0.0.1", "localhost"].includes(url.hostname))
     throw new TypeError(
-      "Local service management requires a loopback endpoint",
+      "Local service management requires an IPv4 loopback endpoint",
     );
   const port = Number(url.port || "80");
   if (!Number.isInteger(port) || port < 1 || port > 65535)
@@ -202,13 +206,16 @@ export function writeServiceState(path: string, state: PersistedService): void {
   }
 }
 
-function clearServiceState(path: string): void {
+/** Drop the service record without touching the recorded process. */
+export function removeServiceState(path: string): void {
   try {
     rmSync(path, { force: true });
   } catch {
     // A stale state file is retried by the next status read.
   }
 }
+
+const clearServiceState = removeServiceState;
 
 function alive(io: ServiceIO, pid?: number): boolean {
   if (!isValidPid(pid)) return false;
@@ -218,6 +225,11 @@ function alive(io: ServiceIO, pid?: number): boolean {
   } catch {
     return false;
   }
+}
+
+/** Whether a pid is alive, rejecting pids this plugin never records. */
+export function processAlive(io: ServiceIO, pid?: number): boolean {
+  return alive(io, pid);
 }
 
 /**
@@ -231,26 +243,89 @@ export function isServiceImage(image: string): boolean {
 }
 
 /**
- * Whether the recorded process is the service this plugin started for the
- * endpoint on screen. The saved endpoint must match the requested one, the pid
- * must still be alive, and its image must still be a Python (or `reme`)
- * executable, which is what a recycled pid would rarely be.
+ * Ownership of the recorded process, as far as this plugin can prove it.
  *
- * This guards a destructive operation, so it fails *closed*: an unreadable
- * image is not proof of ownership.
+ * - `owned`: endpoint, pid, image and command line all match the launch this
+ *   plugin recorded.
+ * - `foreign`: at least one piece of evidence contradicts the record.
+ * - `unknown`: the process exists but its image or command line could not be
+ *   read (localized `tasklist`, `ps` failure, missing permissions).
+ *
+ * Stop is destructive, so it only accepts `owned`; starting can discard an
+ * `unknown` record (without killing it) instead of being blocked forever.
+ */
+export type ServiceOwnership = "owned" | "foreign" | "unknown";
+
+/** Compare paths and ports with separators and case normalized. */
+function normalizeCommandText(value: string): string {
+  return value.replaceAll("\\\\", "\\").replaceAll("/", "\\").toLowerCase();
+}
+
+/**
+ * The recorded launch always passes `workspace_dir=<dir>` and
+ * `service.port=<port>` as argv entries (also inside the Python wrapper's
+ * `-c` script), so their presence is strong evidence that this pid is the
+ * process the record describes — not merely another Python that reused the pid.
+ */
+function commandMatches(command: string, persisted: PersistedService): boolean {
+  let port: number;
+  try {
+    port = parseLocalEndpoint(persisted.endpoint).port;
+  } catch {
+    return false;
+  }
+  const workspace = persisted.workspaceDir.trim();
+  if (!workspace) return false;
+  const text = normalizeCommandText(command);
+  const marker = `workspace_dir=${normalizeCommandText(workspace)}`;
+  const index = text.indexOf(marker);
+  if (index < 0) return false;
+  // Require a boundary so `C:\a` does not match another service using `C:\ab`.
+  const next = text[index + marker.length] ?? "";
+  if (next && !/[\s"',\]]/.test(next)) return false;
+  return new RegExp(`service\\.port=${port}(?!\\d)`).test(text);
+}
+
+export async function serviceOwnership(
+  io: ServiceIO,
+  persisted: PersistedService | undefined,
+  endpoint: string,
+): Promise<ServiceOwnership> {
+  if (!persisted || !isValidPid(persisted.pid)) return "foreign";
+  if (serviceEndpointKey(persisted.endpoint) !== serviceEndpointKey(endpoint))
+    return "foreign";
+  if (!alive(io, persisted.pid)) return "foreign";
+  let image = "";
+  try {
+    image = await io.processImage(persisted.pid);
+  } catch {
+    image = "";
+  }
+  if (!image.trim()) return "unknown";
+  if (!isServiceImage(image)) return "foreign";
+  let command = "";
+  try {
+    command = (await io.processCommandLine?.(persisted.pid)) ?? "";
+  } catch {
+    command = "";
+  }
+  if (!command.trim()) return "unknown";
+  return commandMatches(command, persisted) ? "owned" : "foreign";
+}
+
+/**
+ * Whether the recorded process is provably the service this plugin started
+ * for the endpoint on screen.
+ *
+ * This guards a destructive operation, so it fails *closed*: unreadable
+ * evidence is not proof of ownership.
  */
 export async function ownsService(
   io: ServiceIO,
   persisted: PersistedService | undefined,
   endpoint: string,
 ): Promise<boolean> {
-  if (!persisted || !isValidPid(persisted.pid)) return false;
-  if (serviceEndpointKey(persisted.endpoint) !== serviceEndpointKey(endpoint))
-    return false;
-  if (!alive(io, persisted.pid)) return false;
-  const image = await io.processImage(persisted.pid);
-  if (!image.trim()) return false;
-  return isServiceImage(image);
+  return (await serviceOwnership(io, persisted, endpoint)) === "owned";
 }
 
 /** Running / conflict / stopped, with ownership of the running process. */
@@ -276,11 +351,15 @@ export async function serviceStatus(
   // A record whose process is gone must not be reported, or a later start
   // would keep seeing a stale pid. Remove it while nobody can be relying on it.
   if (persisted && !recordAlive) clearServiceState(options.statePath);
+  // Ownership is expensive (image plus command line). During boot the service
+  // is polled every second while `stopped`, where it is not needed, so it is
+  // computed lazily only for the phases that report it.
+  const ownership = async (): Promise<ServiceOwnership> =>
+    recordForEndpoint && recordAlive
+      ? serviceOwnership(io, persisted, options.endpoint)
+      : "foreign";
   if (health.ok) {
-    const managed =
-      recordForEndpoint &&
-      recordAlive &&
-      (await ownsService(io, persisted, options.endpoint));
+    const managed = (await ownership()) === "owned";
     return {
       phase: "running",
       managed,
@@ -300,19 +379,26 @@ export async function serviceStatus(
   } catch {
     // A remote or https endpoint is health-checked only; it has no local port.
   }
-  if (portOpen)
+  if (portOpen) {
+    // Our own service can occupy the port without being healthy (still
+    // booting, or a rejected token); identify it so the tab can stop it.
+    const managed = (await ownership()) === "owned";
     return {
       phase: "conflict",
-      managed: false,
+      managed,
       endpoint: options.endpoint,
+      ...(managed && persisted?.pid !== undefined
+        ? { pid: persisted.pid }
+        : {}),
       logPath: options.logPath,
     };
+  }
   return {
     phase: "stopped",
     managed: false,
     endpoint: options.endpoint,
     // A live record for this endpoint means a launch that never became
-    // healthy; the manager stops it before spawning a replacement.
+    // healthy; the manager stops or discards it before spawning a replacement.
     ...(recordForEndpoint && recordAlive && persisted?.pid !== undefined
       ? { pid: persisted.pid }
       : {}),
@@ -463,6 +549,8 @@ export async function stopService(
     timeoutMs?: number;
     forceTimeoutMs?: number;
     pollMs?: number;
+    /** Precomputed ownership from the caller; avoids a second process probe. */
+    ownership?: ServiceOwnership;
   },
 ): Promise<ServiceStopResult> {
   const persisted = readServiceState(options.statePath);
@@ -470,7 +558,16 @@ export async function stopService(
     if (persisted) clearServiceState(options.statePath);
     return { stopped: false, reason: "No service started by this plugin" };
   }
-  if (!(await ownsService(io, persisted, options.endpoint)))
+  const ownership =
+    options.ownership ??
+    (await serviceOwnership(io, persisted, options.endpoint));
+  if (ownership === "unknown")
+    return {
+      stopped: false,
+      reason:
+        "The recorded process identity could not be verified; refusing to stop it",
+    };
+  if (ownership !== "owned")
     return {
       stopped: false,
       reason: "The recorded service does not belong to this endpoint",
@@ -509,7 +606,7 @@ export async function stopService(
   return {
     stopped: false,
     pid,
-    reason: "The service did not exit after SIGKILL",
+    reason: "The service did not exit after the force-kill",
   };
 }
 
@@ -572,7 +669,7 @@ export function createServiceIO(): ServiceIO {
       });
     },
     async spawnService({ exe, args, cwd, logPath, env }) {
-      const fd = openSync(logPath, "a");
+      const fd = openAppendLog(logPath);
       let child: ReturnType<typeof spawn>;
       try {
         child = spawn(exe, args, {
@@ -652,6 +749,37 @@ export function createServiceIO(): ServiceIO {
         execFile(
           "ps",
           ["-p", String(pid), "-o", "comm="],
+          { timeout: 3000 },
+          (error, stdout) => resolve(error ? "" : String(stdout ?? "").trim()),
+        );
+      });
+    },
+    processCommandLine(pid) {
+      return new Promise((resolve) => {
+        if (!isValidPid(pid)) {
+          resolve("");
+          return;
+        }
+        if (process.platform === "win32") {
+          // wmic is absent from recent Windows builds, so ask CIM. The encoding
+          // prefix keeps non-ASCII workspace paths intact through the pipe.
+          execFile(
+            "powershell.exe",
+            [
+              "-NoProfile",
+              "-NonInteractive",
+              "-Command",
+              `[Console]::OutputEncoding=[Text.Encoding]::UTF8; (Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`,
+            ],
+            { windowsHide: true, timeout: 5000 },
+            (error, stdout) =>
+              resolve(error ? "" : String(stdout ?? "").trim()),
+          );
+          return;
+        }
+        execFile(
+          "ps",
+          ["-p", String(pid), "-o", "args="],
           { timeout: 3000 },
           (error, stdout) => resolve(error ? "" : String(stdout ?? "").trim()),
         );

@@ -70,7 +70,8 @@ The installation is a Host-owned job:
 - Progress is polled by job id, so a second installation for another interpreter cannot replace what you see.
 - **Cancel** stops pip and its build children, and the interpreter stays locked until the process has actually
   exited.
-- The log is written to `$DSH_HOME/reme-memory/install-<job>.log` and its tail is shown in place.
+- The log is written to `$DSH_HOME/reme-memory/install-<job>.log` and its tail is shown in place; install and
+  service logs are rotated to `.log.1` once they pass 5 MB.
 - When the plugin unloads, running jobs are stopped.
 
 ## Workspace `.env`
@@ -117,18 +118,22 @@ processes it manages when the Host exits. The plugin owns a small service adapte
 - The launch is recorded in `$DSH_HOME/reme-memory/service.json` (pid, endpoint, workspace, command, start time)
   **after** the OS acknowledged the spawn, so a missing interpreter leaves no state behind.
 - A service is reported as managed — and offered a **Stop** button — only when the record matches the endpoint on
-  screen, the pid is still alive, and its image is still a Python or `reme` executable. A record for port 2333
-  never claims a service on port 2444, and a recycled pid is not mistaken for this service. When the image cannot
-  be read, ownership fails closed: the process is shown as foreign rather than offered a Stop button.
+  screen, the pid is still alive, its image is still a Python or `reme` executable, **and** its command line still
+  carries the recorded `workspace_dir` and `service.port`. The command line is what makes a recycled pid safe: an
+  image name alone cannot prove which launch a pid belongs to. A record for port 2333 never claims a service on
+  port 2444. When the evidence cannot be read, ownership stays unproven: the process is shown as foreign, Stop
+  refuses to touch it, and a later Start drops the stale record instead of being blocked forever.
+- A service that occupies the port but fails the health check is reported as a conflict; if it is provably this
+  plugin's service, the tab still offers **Stop**.
 - **Stop** tree-kills the recorded process (process group on POSIX, `taskkill /T /F` on Windows), waits for it to
-  exit, escalates to `SIGKILL` if it ignores the graceful signal, and clears the record only after the pid is
-  gone. A service started elsewhere stays untouched and is only observed.
-- **Start** is serialized: two requests cannot spawn two services, and a request that arrives while a launch is
-  still in flight is told so instead of silently pretending to start.
+  exit, escalates (POSIX: `SIGTERM` then `SIGKILL`; Windows: force `taskkill` again), and clears the record only
+  after the pid is gone. A service started elsewhere stays untouched and is only observed.
+- **Start** is serialized: two requests cannot spawn two services, and a second request observes the launch
+  already in flight. Before replacing a recorded launch that never became healthy, Start only kills it when
+  ownership is proven; otherwise it drops the record without touching the process.
 - **Auto-start** (`autoStart`, off by default) pulls the service up when DSH starts, if it is not already running.
 
-Python probes and pip installs are bounded Host operations; the service is the only intentionally detached
-process.
+Python probes and pip installs are bounded Host operations; the service is the only process that must outlive DSH.
 
 ## Platform support
 
