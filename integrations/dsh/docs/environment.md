@@ -59,9 +59,10 @@ The check asks the selected interpreter three questions and reports them as metr
 - `[core]` extras: whether `import agentscope` works. Without it, `auto_memory` and `auto_dream` are unavailable.
 - `reme` CLI: the console script beside the interpreter, or the Python wrapper fallback used at start time.
 
-**Install reme-ai[core]** runs `python -m pip install reme-ai[core]`, optionally with an upgrade and a package
-index (PyPI, Tsinghua, Aliyun). Large wheels are downloaded on first use; expect 5–20 minutes depending on the
-network.
+**Install reme-ai[core]** runs `python -m pip install reme-ai[core]`, optionally with a package index (PyPI,
+Tsinghua, Aliyun). **Upgrade** adds `-U`; **Reinstall** adds `--force-reinstall`, because pip otherwise reports a
+present-but-broken install as "already satisfied". Large wheels are downloaded on first use; expect 5–20 minutes
+depending on the network.
 
 The installation is a Host-owned job:
 
@@ -71,7 +72,7 @@ The installation is a Host-owned job:
 - **Cancel** stops pip and its build children, and the interpreter stays locked until the process has actually
   exited.
 - The log is written to `$DSH_HOME/reme-memory/install-<job>.log` and its tail is shown in place; install and
-  service logs are rotated to `.log.1` once they pass 5 MB.
+  service logs are rotated to `.log.1` once they pass 5 MB, and only the newest 20 install logs are kept.
 - When the plugin unloads, running jobs are stopped.
 
 ## Workspace `.env`

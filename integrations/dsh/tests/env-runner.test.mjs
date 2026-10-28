@@ -4,6 +4,7 @@ import {
   closeSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -12,7 +13,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createInstallSpawner } from "../dist/environment/host/install.js";
-import { openAppendLog } from "../dist/environment/host/log.js";
+import {
+  openAppendLog,
+  pruneInstallLogs,
+} from "../dist/environment/host/log.js";
 import { createNodeRunner } from "../dist/environment/host/runner.js";
 
 test("a timeout settles with an explicit error instead of hanging", async () => {
@@ -73,4 +77,17 @@ test("an oversized log is rotated before the next append", (t) => {
   closeSync(fd);
   assert.equal(readFileSync(`${path}.1`, "utf8").length, 200);
   assert.equal(statSync(path).size, 0);
+});
+
+test("per-job install logs are pruned to the newest files", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "reme-prune-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  for (let index = 0; index < 25; index += 1)
+    writeFileSync(join(directory, `install-${index}.log`), "x");
+
+  pruneInstallLogs(directory, 20);
+  const remaining = readdirSync(directory).filter((name) =>
+    name.endsWith(".log"),
+  );
+  assert.equal(remaining.length, 20);
 });

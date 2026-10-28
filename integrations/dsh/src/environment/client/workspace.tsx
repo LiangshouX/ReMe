@@ -298,6 +298,10 @@ export function useWorkspace(
             error: safeError(error),
           },
         });
+      } finally {
+        // An aborted probe never settles into a result; without this the
+        // button would stay disabled on "Testing…" until the tab remounts.
+        if (controller.signal.aborted) setLlmTest({ phase: "idle" });
       }
     },
     [llmTest.phase, rpc, workspaceDir],

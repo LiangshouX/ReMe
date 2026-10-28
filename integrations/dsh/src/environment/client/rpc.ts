@@ -77,6 +77,14 @@ function booleanField(
   return value;
 }
 
+function optionalStringField(
+  body: Record<string, unknown>,
+  key: string,
+  what: string,
+): void {
+  if (body[key] !== undefined && typeof body[key] !== "string") fail(what);
+}
+
 function arrayField(
   body: Record<string, unknown>,
   key: string,
@@ -105,7 +113,29 @@ export function parseDetection(value: unknown): PythonDetection {
     stringField(env, "exe", what);
     stringField(env, "version", what);
     booleanField(env, "ok", what);
-    record(env.origin, what);
+    const origin = record(env.origin, what);
+    const kind = stringField(origin, "kind", what);
+    if (
+      ![
+        "conda",
+        "python.org",
+        "windows-store",
+        "venv",
+        "system",
+        "unknown",
+      ].includes(kind)
+    )
+      fail(what);
+    if (kind === "conda") {
+      stringField(origin, "envName", what);
+      stringField(origin, "root", what);
+    }
+    if (kind === "venv") stringField(origin, "baseExe", what);
+    if (env.reme !== undefined) {
+      const reme = record(env.reme, what);
+      booleanField(reme, "installed", what);
+      stringField(reme, "version", what);
+    }
   }
   return value as PythonDetection;
 }
@@ -118,6 +148,7 @@ export function parseRemeCheck(value: unknown): RemeCheck {
   booleanField(body, "hasCore", what);
   stringField(body, "version", what);
   stringField(body, "cliPath", what);
+  stringField(body, "error", what);
   return value as unknown as RemeCheck;
 }
 
@@ -130,6 +161,8 @@ export function parseInstallStatus(value: unknown): InstallStatus | null {
   stringField(body, "pythonPath", what);
   stringField(body, "startedAt", what);
   stringField(body, "logPath", what);
+  stringField(body, "logTail", what);
+  if (body.cancelling !== undefined) booleanField(body, "cancelling", what);
   const phase = stringField(body, "phase", what);
   if (!["running", "succeeded", "failed", "cancelled"].includes(phase))
     fail(what);
@@ -190,6 +223,8 @@ export function parseServiceStart(value: unknown): ServiceStartResult {
   stringField(body, "command", what);
   stringField(body, "logPath", what);
   stringField(body, "startedAt", what);
+  optionalStringField(body, "error", what);
+  optionalStringField(body, "code", what);
   return value as unknown as ServiceStartResult;
 }
 
@@ -197,12 +232,15 @@ export interface ServiceStopView {
   stopped: boolean;
   pid?: number;
   reason?: string;
+  code?: string;
 }
 
 export function parseServiceStop(value: unknown): ServiceStopView {
   const what = "service stop";
   const body = record(value, what);
   booleanField(body, "stopped", what);
+  optionalStringField(body, "reason", what);
+  optionalStringField(body, "code", what);
   return value as ServiceStopView;
 }
 

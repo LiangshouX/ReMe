@@ -349,6 +349,7 @@ export class ReMeEnvManager {
         logPath,
         startedAt: now,
         error: `A service start for ${starting.endpoint} is still in progress`,
+        code: "other-endpoint-starting",
       };
     }
     this.starting = undefined;
@@ -374,6 +375,7 @@ export class ReMeEnvManager {
           logPath,
           startedAt: now,
           error: "Another process is already listening on this endpoint",
+          code: "conflict",
         };
       const previous = await stopService(this.serviceIO, {
         statePath: this.serviceStatePath,
@@ -390,6 +392,7 @@ export class ReMeEnvManager {
           error: `A previous launch could not be stopped: ${
             previous.reason ?? "unknown reason"
           }`,
+          code: "previous-not-stopped",
         };
     }
     // A record for a *different* endpoint that is still alive would be
@@ -417,6 +420,7 @@ export class ReMeEnvManager {
           logPath,
           startedAt: now,
           error: `A service for ${recorded.endpoint} is still running; stop it from that endpoint first`,
+          code: "other-endpoint-running",
         };
       removeServiceState(this.serviceStatePath);
     }
@@ -445,6 +449,7 @@ export class ReMeEnvManager {
             error: `A previous launch could not be stopped: ${
               previous.reason ?? "unknown reason"
             }`,
+            code: "previous-not-stopped",
           };
       } else {
         removeServiceState(this.serviceStatePath);
@@ -459,6 +464,7 @@ export class ReMeEnvManager {
         logPath,
         startedAt: now,
         error: "Select a Python interpreter first",
+        code: "no-python",
       };
     const check = await this.checkReme(path);
     if (!check.installed)
@@ -469,6 +475,7 @@ export class ReMeEnvManager {
         logPath,
         startedAt: now,
         error: "reme-ai is not installed in the selected interpreter",
+        code: "not-installed",
       };
     if (!check.versionOk)
       return {
@@ -480,6 +487,7 @@ export class ReMeEnvManager {
         error: `reme-ai ${
           check.version || "(unknown version)"
         } is older than ${MINIMUM_REME}; upgrade it first`,
+        code: "version-too-old",
       };
     // Set before the spawn so a second request arriving while the service is
     // booting observes the first launch instead of spawning another one. It is
@@ -508,6 +516,7 @@ export class ReMeEnvManager {
         logPath,
         startedAt: now,
         error: `Could not start the ReMe service: ${safeError(error)}`,
+        code: "start-failed",
       };
     }
   }

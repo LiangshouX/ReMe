@@ -283,6 +283,18 @@ test("a recycled pid that is no longer the service is not managed", async (t) =>
   }
 });
 
+test("recognizes the Windows wrapper command line with escaped quotes", async (t) => {
+  const { statePath } = tempState(t, "reme-wrapper-");
+  record(statePath);
+  const state = readServiceState(statePath);
+  // What Windows shows for `python -c <wrapper>`: the JSON quotes are escaped
+  // as `\"` and each path separator appears doubled.
+  const escaped = state.workspaceDir.replaceAll("\\", "\\\\");
+  const command = `python -c "import sys;sys.argv=[\\"reme\\",\\"start\\",\\"workspace_dir=${escaped}\\",\\"service.port=2334\\"];from reme.reme import main"`;
+  const { io } = fakeIO({ processCommandLine: async () => command });
+  assert.equal(await serviceOwnership(io, state, ENDPOINT), "owned");
+});
+
 test("a dead record is cleared instead of reporting a stale pid", async (t) => {
   const { directory, statePath } = tempState(t, "reme-dead-");
   record(statePath);
@@ -373,6 +385,7 @@ test("stops the managed pid and clears the state file after it exits", async (t)
   assert.deepEqual(await stopService(io, { statePath, endpoint: ENDPOINT }), {
     stopped: false,
     reason: "No service started by this plugin",
+    code: "no-record",
   });
 });
 

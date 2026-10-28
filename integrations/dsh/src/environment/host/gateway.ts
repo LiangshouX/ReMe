@@ -61,13 +61,19 @@ export class ReMeEnvGateway extends TypertRemoteService {
   @Remote("install")
   async install(
     input:
-      | { pythonPath?: string; upgrade?: boolean; indexUrl?: string }
+      | {
+          pythonPath?: string;
+          upgrade?: boolean;
+          indexUrl?: string;
+          forceReinstall?: boolean;
+        }
       | undefined,
   ): Promise<InstallStatus> {
     return this.ctx.remeEnv.install({
       pythonPath: input?.pythonPath ?? "",
       upgrade: input?.upgrade === true,
       indexUrl: typeof input?.indexUrl === "string" ? input.indexUrl : "",
+      forceReinstall: input?.forceReinstall === true,
     });
   }
 

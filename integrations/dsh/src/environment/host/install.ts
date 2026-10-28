@@ -3,7 +3,7 @@ import { closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 
 import type { InstallPhase, InstallRequest, InstallStatus } from "../types.js";
-import { openAppendLog } from "./log.js";
+import { openAppendLog, pruneInstallLogs } from "./log.js";
 import { isAbsolutePath } from "./paths.js";
 
 export interface InstallChild {
@@ -31,6 +31,9 @@ export function pipArgs(request: InstallRequest): string[] {
     "--no-input",
   ];
   if (request.upgrade) args.push("-U");
+  // `pip install reme-ai[core]` reports "already satisfied" for a broken but
+  // present install, so an explicit Reinstall must force it.
+  if (request.forceReinstall) args.push("--force-reinstall");
   const indexUrl = (request.indexUrl ?? "").trim();
   if (indexUrl) {
     if (!/^https?:\/\/\S+$/i.test(indexUrl))
@@ -66,7 +69,10 @@ export function tailLog(path: string, maxLines = 30, maxBytes = 8192): string {
       // The cut may be mid-line and even mid-character; drop that partial line
       // so the tail never starts with a replacement character.
       const firstBreak = text.indexOf("\n");
-      text = firstBreak >= 0 ? text.slice(firstBreak + 1) : text;
+      text =
+        firstBreak >= 0
+          ? text.slice(firstBreak + 1)
+          : text.replace(/^\uFFFD+/, "");
     }
     text = text.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
     return text
@@ -206,6 +212,7 @@ export class InstallJobs {
       36,
     )}-${(this.sequence += 1).toString(36)}`;
     mkdirSync(this.options.logDir, { recursive: true });
+    pruneInstallLogs(this.options.logDir);
     const logPath = join(this.options.logDir, `${id}.log`);
     const child = this.options.spawner.start({
       exe: pythonPath,

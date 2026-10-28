@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { StatusRpc } from "../../client/status-page.js";
 import { safeError } from "../../endpoint.js";
-import type { ServiceState } from "../types.js";
-import type { EnvTranslator } from "./locales.js";
-import { fill } from "./locales.js";
+import type { ServiceStartResult, ServiceState } from "../types.js";
+import { fill, type EnvKey, type EnvTranslator } from "./locales.js";
 import { StatusBadge } from "./presentation.js";
 import {
   envCall,
@@ -20,6 +19,38 @@ import {
  * considers the launch in flight.
  */
 const START_DEADLINE_MS = 120_000;
+
+/** Host start errors carry a stable code; older/unknown codes fall back. */
+const START_ERROR_KEYS: Record<string, EnvKey> = {
+  "other-endpoint-starting": "startErrorOtherEndpoint",
+  conflict: "startErrorConflict",
+  "other-endpoint-running": "startErrorOtherEndpointRunning",
+  "previous-not-stopped": "startErrorPreviousNotStopped",
+  "no-python": "startErrorNoPython",
+  "not-installed": "startErrorNotInstalled",
+  "version-too-old": "startErrorVersionTooOld",
+  "start-failed": "startErrorFailed",
+};
+
+function startErrorText(t: EnvTranslator, result: ServiceStartResult): string {
+  const key = result.code ? START_ERROR_KEYS[result.code] : undefined;
+  return key ? t(key) : result.error || t("serviceError");
+}
+
+const STOP_REASON_KEYS: Record<string, EnvKey> = {
+  "no-record": "stopNoRecord",
+  foreign: "stopForeign",
+  unverified: "stopUnknownIdentity",
+  "not-exited": "stopNotExited",
+};
+
+function stopReasonText(
+  t: EnvTranslator,
+  result: { code?: string; reason?: string },
+): string {
+  const key = result.code ? STOP_REASON_KEYS[result.code] : undefined;
+  return key ? t(key) : result.reason || t("serviceError");
+}
 
 export interface ServiceViewState {
   phase: "checking" | "running" | "starting" | "stopped" | "conflict" | "error";
@@ -75,9 +106,15 @@ export function useService(
   const startController = useRef<AbortController | undefined>(undefined);
 
   // A new endpoint has no known phase yet; keeping the previous endpoint's
-  // "running + old pid/version" on screen would mislabel the new one.
+  // "running + old pid/version" on screen would mislabel the new one. A start
+  // poll for the old endpoint must stop before it can paint that old data.
   useEffect(() => {
+    startController.current?.abort();
+    // Resetting the view when the endpoint prop changes is intentional; the
+    // hook has no key, so this is the reset path.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setState({ phase: "checking" });
+    setStopError("");
   }, [endpoint]);
 
   useEffect(() => () => startController.current?.abort(), []);
@@ -96,18 +133,19 @@ export function useService(
           ),
         );
         if (controller.signal.aborted) return;
-        setState((current) =>
-          current.phase === "starting"
-            ? current
-            : { phase: next.phase, data: next },
-        );
+        // Recheck must not be swallowed while a start is in flight: the
+        // response belongs to the endpoint on screen. `stopped` with a live pid
+        // is the Host's "launch still booting" signal.
+        setState({
+          phase:
+            next.phase === "stopped" && next.pid !== undefined
+              ? "starting"
+              : next.phase,
+          data: next,
+        });
       } catch (error) {
         if (controller.signal.aborted) return;
-        setState((current) =>
-          current.phase === "starting"
-            ? current
-            : { phase: "error", error: safeError(error) },
-        );
+        setState({ phase: "error", error: safeError(error) });
       }
     })();
     return () => controller.abort();
@@ -134,7 +172,7 @@ export function useService(
       );
       if (controller.signal.aborted) return;
       if (started.error) {
-        setState({ phase: "error", error: started.error });
+        setState({ phase: "error", error: startErrorText(t, started) });
         return;
       }
       const deadline = Date.now() + START_DEADLINE_MS;
@@ -154,10 +192,23 @@ export function useService(
               controller.signal,
             ),
           );
+          if (controller.signal.aborted) return;
           if (status.phase === "running") {
             setState({ phase: "running", data: status });
             return;
           }
+          if (status.phase === "conflict") {
+            // Someone (possibly our own booting service) owns the port.
+            setState({ phase: "conflict", data: status });
+            return;
+          }
+          if (status.phase === "stopped" && status.pid === undefined) {
+            // The Host already dropped the start marker: the launch died before
+            // it ever listened, so waiting out the 120 s deadline is wrong.
+            setState({ phase: "error", error: t("startFailedStopped") });
+            return;
+          }
+          // stopped with a live pid: the process is still booting.
         } catch {
           // Keep polling: a starting service answers once it is listening.
         }
@@ -175,7 +226,7 @@ export function useService(
       const result = parseServiceStop(
         await envCall(rpc, "serviceStop", { endpoint }),
       );
-      setStopError(result.stopped ? "" : result.reason || t("serviceError"));
+      setStopError(result.stopped ? "" : stopReasonText(t, result));
       refresh();
     } catch (error) {
       setState({ phase: "error", error: safeError(error) });
@@ -276,6 +327,7 @@ export function ServiceSection({
   remeInstalled,
   autoStart,
   writable,
+  current,
   onAutoStart,
 }: {
   t: EnvTranslator;
@@ -285,6 +337,8 @@ export function ServiceSection({
   remeInstalled: boolean;
   autoStart: boolean;
   writable: boolean;
+  /** False while the state on screen belongs to another endpoint. */
+  current: boolean;
   onAutoStart(checked: boolean): void;
 }): JSX.Element {
   const { state, stopping, stopError, log } = control;
@@ -293,8 +347,9 @@ export function ServiceSection({
   // offer the same Stop affordance instead of leaving the tab without a way
   // out other than editing the record by hand.
   const canStop =
-    state.phase === "running" ||
-    (state.phase === "conflict" && state.data?.managed === true);
+    current &&
+    (state.phase === "running" ||
+      (state.phase === "conflict" && state.data?.managed === true));
 
   return (
     <section className="reme-env-card">
@@ -307,10 +362,14 @@ export function ServiceSection({
           <p>{t("serviceHint")}</p>
         </div>
         <aside>
-          {state.phase === "checking" || state.phase === "starting" ? (
+          {!current ||
+          state.phase === "checking" ||
+          state.phase === "starting" ? (
             <StatusBadge tone="progress">
               {t(
-                state.phase === "starting"
+                !current
+                  ? "checking"
+                  : state.phase === "starting"
                   ? "serviceBadgeStarting"
                   : "checking",
               )}
@@ -323,7 +382,11 @@ export function ServiceSection({
             </StatusBadge>
           ) : state.phase === "conflict" ? (
             <StatusBadge tone="progress">
-              {t("serviceBadgeConflict")}
+              {t(
+                state.data?.managed
+                  ? "serviceBadgeUnhealthy"
+                  : "serviceBadgeConflict",
+              )}
             </StatusBadge>
           ) : (
             <StatusBadge tone="bad">{t("serviceBadgeStopped")}</StatusBadge>
@@ -344,7 +407,8 @@ export function ServiceSection({
             {t("recheck")}
           </button>
         </div>
-        {state.phase === "running" || state.phase === "conflict" ? (
+        {current &&
+        (state.phase === "running" || state.phase === "conflict") ? (
           <p className="reme-settings-muted">
             {state.data?.managed
               ? fill(t("managedNote"), { pid: state.data?.pid ?? "" })
@@ -353,8 +417,10 @@ export function ServiceSection({
               : null}
           </p>
         ) : null}
-        {state.phase === "conflict" ? (
-          <p className="reme-settings-muted">{t("conflictNote")}</p>
+        {current && state.phase === "conflict" ? (
+          <p className="reme-settings-muted">
+            {state.data?.managed ? t("conflictManagedNote") : t("conflictNote")}
+          </p>
         ) : null}
         {state.phase === "error" && state.error ? (
           <p className="reme-settings-error">
@@ -405,7 +471,11 @@ export function ServiceSection({
               type="button"
               className="reme-settings-save"
               disabled={
-                state.phase === "starting" || !remeInstalled || !pythonPath
+                !current ||
+                state.phase === "starting" ||
+                state.phase === "conflict" ||
+                !remeInstalled ||
+                !pythonPath
               }
               onClick={() => void control.start()}
             >

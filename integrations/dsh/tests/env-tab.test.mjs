@@ -49,6 +49,7 @@ const RESPONSES = {
     versionOk: true,
     hasCore: true,
     cliPath: `${CONDA}\\envs\\reme-serve\\Scripts\\reme.exe`,
+    error: "",
   },
   "remeEnv/installStatus": null,
   "remeEnv/readEnv": {
@@ -147,9 +148,24 @@ async function mount(overrides = {}, options = {}) {
     },
   };
   const rpc = {
-    call: async (_path, method, payload) => {
+    call: async (_path, method, payload, signal) => {
       calls.rpc.push({ method, input: payload?.args?.input });
-      return { ok: true, value: responses[method] ?? null };
+      if (options.pending?.includes(method))
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () => reject(new Error("aborted")),
+            { once: true },
+          );
+        });
+      const value = responses[method];
+      return {
+        ok: true,
+        value:
+          typeof value === "function"
+            ? value(payload?.args?.input)
+            : value ?? null,
+      };
     },
   };
 
@@ -289,6 +305,7 @@ test("sends the chosen package mirror with the install request", async (t) => {
     pythonPath: SUGGESTED,
     upgrade: false,
     indexUrl: "https://pypi.tuna.tsinghua.edu.cn/simple",
+    forceReinstall: true,
   });
 });
 
@@ -406,6 +423,7 @@ test("shows why Stop left the service alone", async (t) => {
         "remeEnv/serviceStop": {
           stopped: false,
           reason: "The recorded process identity could not be verified",
+          code: "unverified",
         },
       },
     },
@@ -420,7 +438,10 @@ test("shows why Stop left the service alone", async (t) => {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
   });
-  assert.match(texts(renderer.toJSON()).join(" "), /could not be verified/);
+  // The Host code is localized in the UI instead of leaking its English text.
+  assert.ok(
+    texts(renderer.toJSON()).join(" ").includes(envZh.stopUnknownIdentity),
+  );
 });
 
 test("surfaces a rejected settings write", async (t) => {
@@ -437,4 +458,284 @@ test("surfaces a rejected settings write", async (t) => {
     await new Promise((resolve) => setTimeout(resolve, 10));
   });
   assert.match(texts(renderer.toJSON()).join(" "), /设置未保存/);
+});
+
+test("an aborted LLM test releases its button", async (t) => {
+  const { renderer, setValue, restore } = await mount(
+    {},
+    { pending: ["remeEnv/testLlm"] },
+  );
+  t.after(restore);
+  await act(async () => {
+    buttonByText(renderer, envZh.expand).props.onClick();
+  });
+  await act(async () => {
+    buttonByText(renderer, envZh.testLlmButton).props.onClick();
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+  assert.ok(texts(renderer.toJSON()).join(" ").includes(envZh.testingLlm));
+
+  await act(async () => {
+    setValue({ remeWorkspaceDir: "/tmp/second-workspace" });
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  const copy = texts(renderer.toJSON()).join(" ");
+  assert.equal(copy.includes(envZh.testingLlm), false);
+  assert.ok(copy.includes(envZh.testLlmButton), "the button is usable again");
+});
+
+test("a start that died before listening reports immediately", async (t) => {
+  const stopped = {
+    phase: "stopped",
+    managed: false,
+    endpoint: "http://127.0.0.1:2333",
+    logPath: "C:\\Users\\test\\.reme\\service.log",
+  };
+  const { renderer, restore } = await mount(
+    {},
+    {
+      responses: {
+        "remeEnv/serviceStatus": stopped,
+        "remeEnv/serviceStart": {
+          started: true,
+          alreadyRunning: false,
+          command: "",
+          logPath: stopped.logPath,
+          startedAt: new Date().toISOString(),
+        },
+      },
+    },
+  );
+  t.after(restore);
+  await act(async () => {
+    buttonByText(renderer, envZh.startService).props.onClick();
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+  });
+  const copy = texts(renderer.toJSON()).join(" ");
+  assert.ok(copy.includes(envZh.startFailedStopped));
+  // Ready to retry without waiting out the 120 s deadline.
+  assert.ok(buttonByText(renderer, envZh.startService));
+});
+
+test("a start that lands on a foreign conflict shows the conflict state", async (t) => {
+  let calls = 0;
+  const states = [
+    {
+      phase: "stopped",
+      managed: false,
+      endpoint: "http://127.0.0.1:2333",
+      logPath: "C:\\Users\\test\\.reme\\service.log",
+    },
+    {
+      phase: "conflict",
+      managed: false,
+      endpoint: "http://127.0.0.1:2333",
+      logPath: "C:\\Users\\test\\.reme\\service.log",
+    },
+  ];
+  const { renderer, restore } = await mount(
+    {},
+    {
+      responses: {
+        "remeEnv/serviceStatus": () =>
+          states[Math.min(calls++, states.length - 1)],
+        "remeEnv/serviceStart": {
+          started: true,
+          alreadyRunning: false,
+          command: "",
+          logPath: states[0].logPath,
+          startedAt: new Date().toISOString(),
+        },
+      },
+    },
+  );
+  t.after(restore);
+  await act(async () => {
+    buttonByText(renderer, envZh.startService).props.onClick();
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+  });
+  assert.ok(texts(renderer.toJSON()).join(" ").includes(envZh.conflictNote));
+});
+
+test("Reinstall forces a reinstall while install and upgrade use the right flags", async () => {
+  const upgrade = await mount(
+    {},
+    {
+      responses: {
+        "remeEnv/checkReme": {
+          installed: true,
+          version: "0.3.1.8",
+          versionOk: false,
+          hasCore: false,
+          cliPath: "",
+          error: "",
+        },
+      },
+    },
+  );
+  await act(async () => {
+    buttonByText(upgrade.renderer, envZh.upgradeButton).props.onClick();
+  });
+  await act(async () => {
+    buttonByText(upgrade.renderer, envZh.confirmInstall).props.onClick();
+  });
+  const upgradeCall = upgrade.calls.rpc
+    .filter((call) => call.method === "remeEnv/install")
+    .at(-1);
+  assert.deepEqual(upgradeCall.input, {
+    pythonPath: SUGGESTED,
+    upgrade: true,
+  });
+  upgrade.restore();
+
+  const fresh = await mount(
+    {},
+    {
+      responses: {
+        "remeEnv/checkReme": {
+          installed: false,
+          version: "",
+          versionOk: false,
+          hasCore: false,
+          cliPath: "",
+          error: "",
+        },
+      },
+    },
+  );
+  await act(async () => {
+    buttonByText(fresh.renderer, envZh.installButton).props.onClick();
+  });
+  await act(async () => {
+    buttonByText(fresh.renderer, envZh.confirmInstall).props.onClick();
+  });
+  const freshCall = fresh.calls.rpc
+    .filter((call) => call.method === "remeEnv/install")
+    .at(-1);
+  assert.deepEqual(freshCall.input, {
+    pythonPath: SUGGESTED,
+    upgrade: false,
+  });
+  fresh.restore();
+
+  const reinstall = await mount();
+  await act(async () => {
+    buttonByText(reinstall.renderer, envZh.reinstall).props.onClick();
+  });
+  await act(async () => {
+    buttonByText(reinstall.renderer, envZh.confirmInstall).props.onClick();
+  });
+  const reinstallCall = reinstall.calls.rpc
+    .filter((call) => call.method === "remeEnv/install")
+    .at(-1);
+  assert.deepEqual(reinstallCall.input, {
+    pythonPath: SUGGESTED,
+    upgrade: false,
+    forceReinstall: true,
+  });
+  reinstall.restore();
+});
+
+test("localizes a coded start error instead of showing Host English", async (t) => {
+  const stopped = {
+    phase: "stopped",
+    managed: false,
+    endpoint: "http://127.0.0.1:2333",
+    logPath: "C:\\Users\\test\\.reme\\service.log",
+  };
+  const { renderer, restore } = await mount(
+    {},
+    {
+      responses: {
+        "remeEnv/serviceStatus": stopped,
+        "remeEnv/serviceStart": {
+          started: false,
+          alreadyRunning: false,
+          error: "Another process is already listening on this endpoint",
+          code: "conflict",
+          command: "",
+          logPath: stopped.logPath,
+          startedAt: new Date().toISOString(),
+        },
+      },
+    },
+  );
+  t.after(restore);
+  await act(async () => {
+    buttonByText(renderer, envZh.startService).props.onClick();
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+  const copy = texts(renderer.toJSON()).join(" ");
+  assert.ok(copy.includes(envZh.startErrorConflict));
+  assert.equal(copy.includes("Another process is already listening"), false);
+});
+
+test("switching the endpoint aborts the previous start poll", async (t) => {
+  const OLD = "http://127.0.0.1:2333";
+  const NEW = "http://127.0.0.1:2444";
+  const stopped = {
+    phase: "stopped",
+    managed: false,
+    endpoint: OLD,
+    logPath: "C:\\Users\\test\\.reme\\service.log",
+  };
+  const newRunning = {
+    phase: "running",
+    managed: true,
+    pid: 1111,
+    endpoint: NEW,
+    version: "9.9.9",
+    logPath: "C:\\Users\\test\\.reme\\service.log",
+  };
+  const oldRunning = {
+    ...newRunning,
+    pid: 5000,
+    endpoint: OLD,
+    version: "0.4.0.9",
+  };
+  let statusCalls = 0;
+  const { renderer, setValue, restore } = await mount(
+    {},
+    {
+      responses: {
+        "remeEnv/serviceStatus": (input) => {
+          if (input?.endpoint === NEW) return newRunning;
+          statusCalls += 1;
+          return statusCalls === 1 ? stopped : oldRunning;
+        },
+        "remeEnv/serviceStart": {
+          started: true,
+          alreadyRunning: false,
+          command: "",
+          logPath: stopped.logPath,
+          startedAt: new Date().toISOString(),
+        },
+      },
+    },
+  );
+  t.after(restore);
+  await act(async () => {
+    buttonByText(renderer, envZh.startService).props.onClick();
+  });
+  // Switch before the poll's 1 s tick: it must not paint the old endpoint's
+  // running data under the new URL.
+  await act(async () => {
+    setValue({ endpoint: NEW });
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+  });
+  const copy = texts(renderer.toJSON()).join(" ");
+  assert.ok(copy.includes("PID 1111"), "the new endpoint's pid is shown");
+  assert.equal(copy.includes("PID 5000"), false);
 });

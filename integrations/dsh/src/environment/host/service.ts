@@ -12,8 +12,13 @@ import { createConnection } from "node:net";
 import { basename, dirname } from "node:path";
 
 import { safeError } from "../../endpoint.js";
-import type { ServiceStartResult, ServiceState } from "../types.js";
+import type {
+  ServiceStartResult,
+  ServiceState,
+  ServiceStopReasonCode,
+} from "../types.js";
 import { openAppendLog } from "./log.js";
+import { isWindowsPath } from "./paths.js";
 
 /**
  * The local ReMe service is a *detached* process: it outlives DSH, which is the
@@ -45,6 +50,8 @@ export interface ServiceStopResult {
   pid?: number;
   /** Why an unmanaged or missing service was left alone. */
   reason?: string;
+  /** Stable reason the client localizes; `reason` stays for diagnostics. */
+  code?: ServiceStopReasonCode;
 }
 
 export interface ServiceIO {
@@ -256,9 +263,17 @@ export function isServiceImage(image: string): boolean {
  */
 export type ServiceOwnership = "owned" | "foreign" | "unknown";
 
-/** Compare paths and ports with separators and case normalized. */
-function normalizeCommandText(value: string): string {
-  return value.replaceAll("\\\\", "\\").replaceAll("/", "\\").toLowerCase();
+/**
+ * Compare paths and ports with separators normalized. Windows command lines
+ * escape quotes as `\"`, so that sequence is folded back before matching; case
+ * is only folded for Windows paths, because POSIX paths are case-sensitive.
+ */
+function normalizeCommandText(value: string, foldCase: boolean): string {
+  const text = value
+    .replaceAll('\\"', '"')
+    .replaceAll("\\\\", "\\")
+    .replaceAll("/", "\\");
+  return foldCase ? text.toLowerCase() : text;
 }
 
 /**
@@ -276,13 +291,15 @@ function commandMatches(command: string, persisted: PersistedService): boolean {
   }
   const workspace = persisted.workspaceDir.trim();
   if (!workspace) return false;
-  const text = normalizeCommandText(command);
-  const marker = `workspace_dir=${normalizeCommandText(workspace)}`;
+  const foldCase = isWindowsPath(workspace);
+  const text = normalizeCommandText(command, foldCase);
+  const marker = `workspace_dir=${normalizeCommandText(workspace, foldCase)}`;
   const index = text.indexOf(marker);
   if (index < 0) return false;
   // Require a boundary so `C:\a` does not match another service using `C:\ab`.
+  // A backslash remains a boundary for the `\"` form older shells produce.
   const next = text[index + marker.length] ?? "";
-  if (next && !/[\s"',\]]/.test(next)) return false;
+  if (next && !/[\s"',\]\\]/.test(next)) return false;
   return new RegExp(`service\\.port=${port}(?!\\d)`).test(text);
 }
 
@@ -444,6 +461,7 @@ export async function startService(
       logPath: options.logPath,
       startedAt,
       error: `Could not start the ReMe service: ${safeError(error)}`,
+      code: "start-failed",
     };
   }
   let child: { pid: number | undefined };
@@ -468,6 +486,7 @@ export async function startService(
       logPath: options.logPath,
       startedAt,
       error: `Could not start the ReMe service: ${safeError(error)}`,
+      code: "start-failed",
     };
   }
   try {
@@ -494,6 +513,7 @@ export async function startService(
       logPath: options.logPath,
       startedAt,
       error: `Could not record the ReMe service: ${safeError(error)}`,
+      code: "start-failed",
     };
   }
   return {
@@ -556,7 +576,11 @@ export async function stopService(
   const persisted = readServiceState(options.statePath);
   if (!persisted || !isValidPid(persisted.pid)) {
     if (persisted) clearServiceState(options.statePath);
-    return { stopped: false, reason: "No service started by this plugin" };
+    return {
+      stopped: false,
+      reason: "No service started by this plugin",
+      code: "no-record",
+    };
   }
   const ownership =
     options.ownership ??
@@ -566,11 +590,13 @@ export async function stopService(
       stopped: false,
       reason:
         "The recorded process identity could not be verified; refusing to stop it",
+      code: "unverified",
     };
   if (ownership !== "owned")
     return {
       stopped: false,
       reason: "The recorded service does not belong to this endpoint",
+      code: "foreign",
     };
   const pid = persisted.pid;
   const pollMs = options.pollMs ?? STOP_POLL_MS;
@@ -607,6 +633,7 @@ export async function stopService(
     stopped: false,
     pid,
     reason: "The service did not exit after the force-kill",
+    code: "not-exited",
   };
 }
 
@@ -681,8 +708,25 @@ export function createServiceIO(): ServiceIO {
           stdio: ["ignore", fd, fd],
         });
         await new Promise<void>((resolve, reject) => {
-          child.once("spawn", () => resolve());
-          child.once("error", (error: Error) => reject(error));
+          // A spawn acknowledgement that never arrives must not block the
+          // start queue (and therefore a queued Stop) forever.
+          const timer = setTimeout(() => {
+            try {
+              child.kill();
+            } catch {
+              // Already gone.
+            }
+            reject(new Error("spawn did not acknowledge within 10 s"));
+          }, 10_000);
+          timer.unref();
+          child.once("spawn", () => {
+            clearTimeout(timer);
+            resolve();
+          });
+          child.once("error", (error: Error) => {
+            clearTimeout(timer);
+            reject(error);
+          });
         });
       } finally {
         // The child owns its inherited handle; the parent copy is no longer

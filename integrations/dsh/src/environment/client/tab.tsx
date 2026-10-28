@@ -47,9 +47,13 @@ function endpointKey(endpoint: string): string {
   try {
     const url = new URL(endpoint);
     const port = url.port || (url.protocol === "https:" ? "443" : "80");
-    return `${
-      url.protocol
-    }//${url.hostname.toLowerCase()}:${port}${url.pathname.replace(
+    // Match the Host's loopback alias rule so `localhost` and `127.0.0.1`
+    // answers compare equal.
+    const host =
+      url.hostname.toLowerCase() === "localhost"
+        ? "127.0.0.1"
+        : url.hostname.toLowerCase();
+    return `${url.protocol}//${host}:${port}${url.pathname.replace(
       /\/+$/,
       "",
     )}`;
@@ -133,8 +137,12 @@ export function ReMeEnvironmentTab({
   const authToken = value?.authToken ?? "";
   const [heroTick, setHeroTick] = useState(0);
   // Settings writes are invisible to the sections otherwise: a rejected
-  // revision or a transport error would silently roll the control back.
-  const [settingsError, setSettingsError] = useState("");
+  // revision or a transport error would silently roll the control back. The
+  // message carries its endpoint so a change of URL drops it without an effect.
+  const [settingsError, setSettingsError] = useState<{
+    endpoint: string;
+    message: string;
+  }>({ endpoint: "", message: "" });
 
   const writeSetting = useCallback(
     async (field: string, next: unknown): Promise<boolean> => {
@@ -145,18 +153,20 @@ export function ReMeEnvironmentTab({
           snapshot.revision,
         );
         if (applied === false) {
-          setSettingsError(t("settingsWriteFailed"));
+          setSettingsError({ endpoint, message: t("settingsWriteFailed") });
           return false;
         }
-        setSettingsError("");
+        setSettingsError({ endpoint, message: "" });
         return true;
       } catch (error) {
-        setSettingsError(safeError(error));
+        setSettingsError({ endpoint, message: safeError(error) });
         return false;
       }
     },
-    [scope, snapshot.revision, snapshot.writable, t],
+    [endpoint, scope, snapshot.revision, snapshot.writable, t],
   );
+  const settingsErrorText =
+    settingsError.endpoint === endpoint ? settingsError.message : "";
 
   const python = usePython(rpc, {
     pythonPath: value?.pythonPath ?? "",
@@ -198,6 +208,7 @@ export function ReMeEnvironmentTab({
   // The Host names the endpoint its answer belongs to; comparing that with the
   // settings endpoint is what makes a stale answer fail the `current` test.
   const serviceEndpoint = service.state.data?.endpoint ?? endpoint;
+  const serviceCurrent = endpointKey(serviceEndpoint) === endpointKey(endpoint);
   const connection: ConnectionState = local
     ? service.state.phase === "running"
       ? {
@@ -222,8 +233,10 @@ export function ReMeEnvironmentTab({
   const ready =
     current &&
     connection.phase === "ok" &&
-    dependency.checkData?.installed === true &&
-    dependency.checkData.versionOk;
+    (!local ||
+      (dependency.checkData?.installed === true &&
+        dependency.checkData.versionOk &&
+        dependency.checkData.hasCore));
   const scannedAt = python.detection.data?.scannedAt
     ? Date.parse(python.detection.data.scannedAt)
     : Number.NaN;
@@ -259,8 +272,12 @@ export function ReMeEnvironmentTab({
         </div>
         <div className="reme-env-hero-chips">
           <StatusBadge tone={healthTone}>{healthText}</StatusBadge>
-          <StatusBadge tone={pythonTone}>{pythonText}</StatusBadge>
-          <StatusBadge tone={remeTone}>{remeText}</StatusBadge>
+          {local ? (
+            <>
+              <StatusBadge tone={pythonTone}>{pythonText}</StatusBadge>
+              <StatusBadge tone={remeTone}>{remeText}</StatusBadge>
+            </>
+          ) : null}
         </div>
         <div className="reme-env-hero-actions">
           <button
@@ -294,9 +311,9 @@ export function ReMeEnvironmentTab({
           {connection.error}
         </p>
       ) : null}
-      {settingsError ? (
+      {settingsErrorText ? (
         <p className="reme-settings-error reme-env-hero-error" role="alert">
-          {settingsError}
+          {settingsErrorText}
         </p>
       ) : null}
       {!local ? (
@@ -329,6 +346,7 @@ export function ReMeEnvironmentTab({
             remeInstalled={dependency.checkData?.installed === true}
             autoStart={value?.autoStart === true}
             writable={snapshot.writable}
+            current={serviceCurrent}
             onAutoStart={(checked) => {
               void writeSetting("autoStart", checked);
             }}

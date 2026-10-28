@@ -42,6 +42,7 @@ export const envEn = {
   upgradeRecommended: "upgrade recommended",
   coreOk: "Available",
   coreMissing: "Missing (auto_memory / auto_dream unavailable)",
+  coreMissingBadge: "core missing",
   cliFallback: "python wrapper fallback",
   installButton: "Install reme-ai[core]",
   upgradeButton: "Upgrade reme-ai",
@@ -97,17 +98,41 @@ export const envEn = {
     "Start or stop the local ReMe service. The service keeps running after DSH closes.",
   serviceBadgeStarting: "Starting…",
   serviceBadgeConflict: "Port occupied",
+  serviceBadgeUnhealthy: "Not healthy",
   serviceBadgeStopped: "Stopped",
   serviceRunning: "Running",
   startService: "Start service",
   stopService: "Stop service",
   startTimeout: "The service did not become healthy within 120 seconds",
+  startFailedStopped:
+    "The service exited before it became healthy. Open the log below.",
+  startErrorOtherEndpoint:
+    "A service start for another endpoint is still in progress.",
+  startErrorConflict: "Another process is already listening on this endpoint.",
+  startErrorOtherEndpointRunning:
+    "A service for another endpoint is still running; stop it there first.",
+  startErrorPreviousNotStopped:
+    "The previous service could not be stopped; check the log.",
+  startErrorNoPython: "Select a Python interpreter first.",
+  startErrorNotInstalled:
+    "reme-ai is not installed in the selected interpreter.",
+  startErrorVersionTooOld:
+    "The installed reme-ai is too old; upgrade it first.",
+  startErrorFailed: "The service could not be started; check the log.",
+  stopNoRecord: "No service was started by this plugin.",
+  stopForeign: "The recorded service does not belong to this endpoint.",
+  stopUnknownIdentity:
+    "The recorded process could not be verified, so it was left running.",
+  stopNotExited:
+    "The service did not exit; its record was kept so you can retry.",
   stopConfirm:
     "Stop the ReMe service? Automatic memory in flight may need a retry.",
   foreignNote:
     "This service was started outside DSH; its state is shown but it is not managed here.",
   conflictNote:
     "Another program occupies this port. Change the service URL port in Memory settings.",
+  conflictManagedNote:
+    "This plugin's service holds the port but is not reporting healthy. Stop it to recover.",
   viewLogs: "View log",
   logEmpty: "The service log is empty.",
   autoStartLabel: "Start the service automatically with DSH",
@@ -192,6 +217,7 @@ export const envZh: typeof envEn = {
   upgradeRecommended: "建议升级",
   coreOk: "可用",
   coreMissing: "缺失（auto_memory / auto_dream 不可用）",
+  coreMissingBadge: "缺少 core",
   cliFallback: "回退到 python 包装",
   installButton: "安装 reme-ai[core]",
   upgradeButton: "升级 reme-ai",
@@ -244,14 +270,31 @@ export const envZh: typeof envEn = {
   serviceHint: "启动或停止本地 ReMe 服务；DSH 关闭后服务仍会保持运行。",
   serviceBadgeStarting: "启动中…",
   serviceBadgeConflict: "端口被占用",
+  serviceBadgeUnhealthy: "未就绪",
   serviceBadgeStopped: "已停止",
   serviceRunning: "运行中",
   startService: "启动服务",
   stopService: "停止服务",
   startTimeout: "服务在 120 秒内未就绪",
+  startFailedStopped: "服务在就绪前已退出，请查看下方日志。",
+  startErrorOtherEndpoint: "另一个服务地址的启动仍在进行中。",
+  startErrorConflict: "该端口已被其他程序占用。",
+  startErrorOtherEndpointRunning:
+    "另一个服务地址的服务仍在运行，请先到那个地址停止它。",
+  startErrorPreviousNotStopped: "上一次服务未能停止，请查看日志。",
+  startErrorNoPython: "请先选择一个 Python 解释器。",
+  startErrorNotInstalled: "所选解释器尚未安装 reme-ai。",
+  startErrorVersionTooOld: "已安装的 reme-ai 版本过低，请先升级。",
+  startErrorFailed: "服务未能启动，请查看日志。",
+  stopNoRecord: "本插件没有启动过该服务。",
+  stopForeign: "记录中的服务不属于当前服务地址。",
+  stopUnknownIdentity: "无法验证记录中的进程身份，已保持其运行。",
+  stopNotExited: "服务未退出；已保留记录，可稍后重试。",
   stopConfirm: "停止 ReMe 服务？进行中的自动记忆可能需要重试。",
   foreignNote: "该服务由 DSH 之外的方式启动，这里只显示状态、不由本插件管理。",
   conflictNote: "端口被其他程序占用；请在『记忆设置』中修改服务地址的端口。",
+  conflictManagedNote:
+    "本插件的服务占用了端口但未通过健康检查；停止它后即可恢复。",
   viewLogs: "查看日志",
   logEmpty: "服务日志为空。",
   autoStartLabel: "随 DSH 启动时自动拉起服务",

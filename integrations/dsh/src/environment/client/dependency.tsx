@@ -31,7 +31,11 @@ export interface DependencyState {
   /** Wall clock tick while an installation runs, for the elapsed label. */
   now: number;
   recheck(): void;
-  start(upgrade: boolean, indexUrl?: string): Promise<void>;
+  start(
+    upgrade: boolean,
+    indexUrl?: string,
+    forceReinstall?: boolean,
+  ): Promise<void>;
   cancel(): Promise<void>;
   dismiss(): void;
 }
@@ -177,7 +181,7 @@ export function useDependency(
   }, []);
 
   const start = useCallback(
-    async (upgrade: boolean, indexUrl?: string) => {
+    async (upgrade: boolean, indexUrl?: string, forceReinstall?: boolean) => {
       if (!pythonPath || install.phase === "running") return;
       setInstall({ phase: "idle" });
       try {
@@ -186,6 +190,7 @@ export function useDependency(
             pythonPath,
             upgrade,
             ...(indexUrl ? { indexUrl } : {}),
+            ...(forceReinstall ? { forceReinstall } : {}),
           }),
         );
         setInstall(
@@ -256,7 +261,7 @@ export function DependencySection({
     : checkData.versionOk && checkData.hasCore
     ? { tone: "ok" as const, text: t("depReady") }
     : checkData.versionOk
-    ? { tone: "progress" as const, text: t("coreMissing") }
+    ? { tone: "progress" as const, text: t("coreMissingBadge") }
     : { tone: "progress" as const, text: t("depUpgrade") };
 
   return (
@@ -302,7 +307,9 @@ export function DependencySection({
           </p>
         ) : null}
         {checkData?.error ? (
-          <p className="reme-settings-error">{checkData.error}</p>
+          <p className="reme-settings-error">
+            {`${t("checkRemeFailed")}: ${checkData.error}`}
+          </p>
         ) : null}
         {checkData ? (
           <div className="reme-env-metrics">
@@ -386,11 +393,16 @@ export function DependencySection({
                   className="reme-settings-save"
                   onClick={() => {
                     setConfirming(false);
+                    // Fresh install: no upgrade. Outdated: upgrade. Current
+                    // but suspect (Reinstall): force pip to reinstall.
+                    const reinstall =
+                      checkData.installed && checkData.versionOk;
                     // The mirror choice reaches pip as `--index-url`; without
                     // it the selector would be decorative.
                     void dependency.start(
-                      !checkData.versionOk,
+                      checkData.installed && !checkData.versionOk,
                       mirror || undefined,
+                      reinstall,
                     );
                   }}
                 >

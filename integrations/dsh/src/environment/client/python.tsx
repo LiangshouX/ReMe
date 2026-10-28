@@ -67,18 +67,28 @@ export function usePython(
         setDetection({ phase: "ready", data: parseDetection(value) });
       } catch (error) {
         if (!controller.signal.aborted)
-          setDetection({ phase: "error", error: safeError(error) });
+          setDetection((current) => ({
+            phase: "error",
+            error: safeError(error),
+            ...(current.data ? { data: current.data } : {}),
+          }));
       }
     })();
     return () => controller.abort();
   }, [rpc, tick, enabled]);
 
-  const detected = detection.phase === "ready" ? detection.data : undefined;
+  // A refresh keeps the last detection data, so the selected interpreter (and
+  // the install/progress panels keyed off it) does not flash away while the
+  // new probe is in flight.
+  const detected = detection.data;
   const suggested = detected?.suggested ?? "";
   const selectedPath = pythonPath || suggested;
 
   const refresh = useCallback(() => {
-    setDetection({ phase: "loading" });
+    setDetection((current) => ({
+      phase: "loading",
+      ...(current.data ? { data: current.data } : {}),
+    }));
     setTick((current) => current + 1);
   }, []);
 

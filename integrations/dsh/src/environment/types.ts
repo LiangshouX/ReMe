@@ -67,6 +67,8 @@ export interface InstallRequest {
   pythonPath: string;
   /** Upgrade an existing installation to the newest satisfying version. */
   upgrade?: boolean;
+  /** Reinstall even when pip already considers the requirement satisfied. */
+  forceReinstall?: boolean;
   /** Optional package index URL (mirror); empty keeps the user's pip config. */
   indexUrl?: string;
 }
@@ -133,6 +135,24 @@ export interface ServiceState {
   logPath: string;
 }
 
+/** Stable reason for a failed start, so the client can localize it. */
+export type ServiceStartErrorCode =
+  | "other-endpoint-starting"
+  | "conflict"
+  | "other-endpoint-running"
+  | "previous-not-stopped"
+  | "no-python"
+  | "not-installed"
+  | "version-too-old"
+  | "start-failed";
+
+/** Stable reason for a refused/unsuccessful stop, so the client can localize it. */
+export type ServiceStopReasonCode =
+  | "no-record"
+  | "foreign"
+  | "unverified"
+  | "not-exited";
+
 export interface ServiceStartResult {
   started: boolean;
   alreadyRunning: boolean;
@@ -141,7 +161,9 @@ export interface ServiceStartResult {
   command: string;
   logPath: string;
   startedAt: string;
+  /** English diagnostic; shown only when no known `code` applies. */
   error?: string;
+  code?: ServiceStartErrorCode;
 }
 
 export interface ServiceLog {

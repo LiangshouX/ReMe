@@ -52,15 +52,17 @@ ReMe 需要 **Python 3.11 或更新版本**。标签页在 Host 上探测下列�
 - `[core]` 附加依赖：`import agentscope` 是否可用。缺失时 `auto_memory` 与 `auto_dream` 不可用。
 - `reme` CLI：解释器旁的命令行入口，或启动时回退使用的 Python 包装。
 
-**安装 reme-ai[core]** 执行 `python -m pip install reme-ai[core]`，可附加升级与软件源（PyPI、清华、阿里云）。首次使用需要
-下载较大的依赖，视网络情况通常 5–20 分钟。
+**安装 reme-ai[core]** 执行 `python -m pip install reme-ai[core]`，可附加软件源（PyPI、清华、阿里云）。**升级**追加
+`-U`；**重装**追加 `--force-reinstall`，否则 pip 会把“存在但已损坏”的安装报成 “already satisfied”。首次使用需要下载较大的
+依赖，视网络情况通常 5–20 分钟。
 
 安装是 Host 侧的任务：
 
 - 关闭配置页后仍在运行；重新打开标签页会为同一个解释器恢复进度。
 - 进度按任务 ID 轮询，为另一个解释器发起的安装不会顶替当前显示。
 - **取消**会同时终止 pip 及其构建子进程，且在进程真正退出前该解释器保持占用。
-- 日志写入 `$DSH_HOME/reme-memory/install-<job>.log`，页面直接显示尾部；安装与服务日志超过 5 MB 会轮转为 `.log.1`。
+- 日志写入 `$DSH_HOME/reme-memory/install-<job>.log`，页面直接显示尾部；安装与服务日志超过 5 MB 会轮转为 `.log.1`，
+  并且目录只保留最近 20 个安装日志。
 - 插件卸载时，仍在运行的安装会被停止。
 
 ## Workspace `.env`

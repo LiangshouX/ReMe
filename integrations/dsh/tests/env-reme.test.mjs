@@ -145,6 +145,12 @@ test("composes pip arguments for install, upgrade and mirrors", () => {
       "reme-ai[core]",
     ],
   );
+  assert.ok(
+    pipArgs({
+      pythonPath: "C:\\env\\python.exe",
+      forceReinstall: true,
+    }).includes("--force-reinstall"),
+  );
   assert.throws(() =>
     pipArgs({ pythonPath: "C:\\env\\python.exe", indexUrl: "ftp://x" }),
   );
