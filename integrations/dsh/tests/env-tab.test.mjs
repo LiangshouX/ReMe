@@ -163,7 +163,7 @@ async function mount(overrides = {}, options = {}) {
         ok: true,
         value:
           typeof value === "function"
-            ? value(payload?.args?.input)
+            ? value(payload?.args?.input, signal)
             : value ?? null,
       };
     },
@@ -769,14 +769,67 @@ test("a live record that never listened offers Stop instead of 'Starting'", asyn
   assert.equal(copy.includes(envZh.serviceBadgeStarting), false);
   assert.ok(copy.includes(envZh.serviceBadgeStale));
   assert.ok(copy.includes(envZh.staleNote));
-  const start = renderer.root.findAll(
-    (node) =>
-      node.type === "button" &&
-      textOf(node.props.children) === envZh.startService,
-  );
-  assert.equal(start.length, 0, "Start is replaced by the Stop way out");
+  // Stop is the way out for a provably owned leftover...
   const stop = buttonByText(renderer, envZh.stopService);
   assert.equal(stop.props.disabled, false, "the recorded pid can be stopped");
+  // ...and Start must stay available too: the pid may have been recycled by a
+  // foreign process, where Stop refuses and only a restart self-heals.
+  const start = buttonByText(renderer, envZh.startService);
+  assert.equal(start.props.disabled, false, "Start can replace the record");
+});
+
+test("Start replaces a stale record that belongs to a foreign pid", async (t) => {
+  // The pid is alive but no longer our service, so Stop answers `foreign` and
+  // keeps the record. Start must still be offered: the Host discards a foreign
+  // record and launches a fresh service.
+  const stale = {
+    phase: "stopped",
+    managed: false,
+    pid: 6000,
+    endpoint: "http://127.0.0.1:2333",
+    logPath: "C:\\Users\\test\\.reme\\service.log",
+  };
+  const running = {
+    phase: "running",
+    managed: true,
+    pid: 7000,
+    version: "0.4.0.9",
+    endpoint: "http://127.0.0.1:2333",
+    logPath: stale.logPath,
+  };
+  let statusCalls = 0;
+  const { renderer, calls, restore } = await mount(
+    {},
+    {
+      responses: {
+        "remeEnv/serviceStatus": () => {
+          statusCalls += 1;
+          return statusCalls === 1 ? stale : running;
+        },
+        "remeEnv/serviceStart": {
+          started: true,
+          alreadyRunning: false,
+          command: "",
+          logPath: stale.logPath,
+          startedAt: new Date().toISOString(),
+        },
+      },
+    },
+  );
+  t.after(restore);
+  await act(async () => {
+    buttonByText(renderer, envZh.startService).props.onClick();
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+  });
+  assert.ok(
+    calls.rpc.some((call) => call.method === "remeEnv/serviceStart"),
+    "the restart really reached the Host",
+  );
+  const copy = texts(renderer.toJSON()).join(" ");
+  assert.ok(copy.includes("ReMe 0.4.0.9"));
+  assert.ok(copy.includes("PID 7000"));
 });
 
 test("an owned conflict during a start keeps polling until healthy", async (t) => {
@@ -1065,4 +1118,141 @@ test("a Python refresh keeps the previous interpreter list on screen", async (t)
   const copy = texts(renderer.toJSON()).join(" ");
   assert.equal(copy.includes(envZh.emptyTitle), false);
   assert.equal(classesOf(renderer.toJSON()).get("reme-env-option"), 6);
+});
+
+test("a failed Python refresh keeps the working list without the empty state", async (t) => {
+  let pythonCalls = 0;
+  const { renderer, restore } = await mount(
+    {},
+    {
+      responses: {
+        "remeEnv/python": () => {
+          pythonCalls += 1;
+          if (pythonCalls === 1) return RESPONSES["remeEnv/python"];
+          throw new Error("probe exploded");
+        },
+      },
+    },
+  );
+  t.after(restore);
+  await act(async () => {
+    buttonByText(renderer, envZh.changeInterpreter).props.onClick();
+  });
+  assert.equal(classesOf(renderer.toJSON()).get("reme-env-option"), 6);
+  await act(async () => {
+    buttonByText(renderer, envZh.refresh).props.onClick();
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+  const copy = texts(renderer.toJSON()).join(" ");
+  assert.ok(copy.includes(envZh.detectFailed));
+  // A failed probe that still has the previous result must not claim that no
+  // Python exists, nor offer Miniconda next to a valid interpreter list.
+  assert.equal(copy.includes(envZh.emptyTitle), false);
+  assert.equal(classesOf(renderer.toJSON()).get("reme-env-option"), 6);
+});
+
+test("the conflict fallback of a start does not paint an aborted request", async (t) => {
+  const OLD = "http://127.0.0.1:2333";
+  const NEW = "http://127.0.0.1:2444";
+  const stopped = {
+    phase: "stopped",
+    managed: false,
+    endpoint: OLD,
+    logPath: "C:\\Users\\test\\.reme\\service.log",
+  };
+  const newRunning = {
+    phase: "running",
+    managed: true,
+    pid: 1111,
+    version: "9.9.9",
+    endpoint: NEW,
+    logPath: stopped.logPath,
+  };
+  let statusCalls = 0;
+  const { renderer, setValue, restore } = await mount(
+    {},
+    {
+      responses: {
+        "remeEnv/serviceStatus": (input, signal) => {
+          if (input?.endpoint === NEW) return newRunning;
+          statusCalls += 1;
+          if (statusCalls === 1) return stopped;
+          // The R3 re-query hangs until the endpoint switch aborts it.
+          return new Promise((_resolve, reject) => {
+            signal?.addEventListener(
+              "abort",
+              () => reject(new Error("aborted")),
+              { once: true },
+            );
+          });
+        },
+        "remeEnv/serviceStart": {
+          started: false,
+          alreadyRunning: false,
+          error: "Another process is already listening on this endpoint",
+          code: "conflict",
+          command: "",
+          logPath: stopped.logPath,
+          startedAt: new Date().toISOString(),
+        },
+      },
+    },
+  );
+  t.after(restore);
+  await act(async () => {
+    buttonByText(renderer, envZh.startService).props.onClick();
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  await act(async () => {
+    setValue({ endpoint: NEW });
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+  const copy = texts(renderer.toJSON()).join(" ");
+  assert.ok(copy.includes("ReMe 9.9.9"), "the new endpoint state is shown");
+  // The old endpoint's conflict error must not land on the new card.
+  assert.equal(copy.includes(envZh.startErrorConflict), false);
+});
+
+test("an unverified record reports the pid it refused to touch", async (t) => {
+  const stopped = {
+    phase: "stopped",
+    managed: false,
+    endpoint: "http://127.0.0.1:2333",
+    logPath: "C:\\Users\\test\\.reme\\service.log",
+  };
+  const { renderer, restore } = await mount(
+    {},
+    {
+      responses: {
+        "remeEnv/serviceStatus": stopped,
+        "remeEnv/serviceStart": {
+          started: false,
+          alreadyRunning: false,
+          error: "The recorded service identity could not be verified",
+          code: "unverified-record",
+          pid: 6000,
+          command: "",
+          logPath: stopped.logPath,
+          startedAt: new Date().toISOString(),
+        },
+      },
+    },
+  );
+  t.after(restore);
+  await act(async () => {
+    buttonByText(renderer, envZh.startService).props.onClick();
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+  const copy = texts(renderer.toJSON()).join(" ");
+  assert.ok(copy.includes("PID 6000"));
+  assert.ok(copy.includes("6000"));
+  assert.equal(copy.includes("The recorded service identity"), false);
 });

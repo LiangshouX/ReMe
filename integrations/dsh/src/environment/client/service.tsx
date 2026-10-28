@@ -38,6 +38,10 @@ const START_ERROR_KEYS: Record<string, EnvKey> = {
 };
 
 function startErrorText(t: EnvTranslator, result: ServiceStartResult): string {
+  // The unverified record carries the pid it refused to touch, so the message
+  // can tell the user what to look for instead of a generic sentence.
+  if (result.code === "unverified-record" && result.pid !== undefined)
+    return fill(t("startErrorUnverifiedRecordPid"), { pid: result.pid });
   const key = result.code ? START_ERROR_KEYS[result.code] : undefined;
   return key ? t(key) : result.error || t("serviceError");
 }
@@ -221,7 +225,11 @@ export function useService(
               return;
             }
           } catch {
-            // Fall back to the reported start error.
+            // A switch of endpoint aborts this call; its error belongs to the
+            // old endpoint and must not be painted (or bump the sequence) on
+            // the new card.
+            if (controller.signal.aborted) return;
+            // Otherwise fall back to the reported start error.
           }
         }
         applyState({ phase: "error", error: startErrorText(t, started) });
@@ -446,6 +454,12 @@ export function ServiceSection({
 }): JSX.Element {
   const { state, stopping, stopError, log } = control;
   const [confirming, setConfirming] = useState(false);
+  // The confirmation belongs to one phase and endpoint: keeping it open across
+  // a transition would re-show "Stop?" on top of a live service later.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setConfirming(false);
+  }, [endpoint, state.phase]);
   // A conflict can still be our own unhealthy service (booting, wrong token);
   // offer the same Stop affordance instead of leaving the tab without a way
   // out other than editing the record by hand. `stopped`/`starting` with a
@@ -463,6 +477,11 @@ export function ServiceSection({
     state.data?.managed === true ||
     ((state.phase === "stopped" || state.phase === "starting") &&
       state.data?.pid !== undefined);
+  // A stale record may be a recycled pid that now belongs to a foreign
+  // process. Stop then refuses, so Start must stay available: the Host stops a
+  // provably owned previous launch, discards a foreign record, and reports an
+  // unverifiable one. Hiding Start would leave that card without a way out.
+  const canRestart = state.phase === "stopped" && state.data?.pid !== undefined;
 
   return (
     <section className="reme-env-card">
@@ -584,7 +603,8 @@ export function ServiceSection({
                 {t("stopService")}
               </button>
             )
-          ) : (
+          ) : null}
+          {!canStop || canRestart ? (
             <button
               type="button"
               className="reme-settings-save"
@@ -599,7 +619,7 @@ export function ServiceSection({
             >
               {t("startService")}
             </button>
-          )}
+          ) : null}
           <button
             type="button"
             className="reme-settings-button"

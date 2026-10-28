@@ -258,11 +258,17 @@ export class ReMeEnvManager {
   /** Tail of the workspace service log. */
   serviceLog(workspaceDir: string): ServiceLog {
     const dir = resolveWorkspaceDir(workspaceDir, homedir());
-    const logPath = join(dir, "service.log");
+    const currentPath = join(dir, "service.log");
+    const current = tailLog(currentPath, 40);
+    if (current) return { logPath: currentPath, lines: current };
     // Rotation moves the previous launch's crash output to `service.log.1`; if
-    // the current file is still empty, that backup is the only diagnostic.
-    const lines = tailLog(logPath, 40) || tailLog(`${logPath}.1`, 40);
-    return { logPath, lines };
+    // the current file is still empty, that backup is the only diagnostic. The
+    // returned path is the file actually read, so the UI labels it correctly.
+    const rotatedPath = `${currentPath}.1`;
+    const rotated = tailLog(rotatedPath, 40);
+    return rotated
+      ? { logPath: rotatedPath, lines: rotated }
+      : { logPath: currentPath, lines: "" };
   }
 
   /** DSH-startup best effort: start a stopped local service when configured. */
@@ -438,8 +444,8 @@ export class ReMeEnvManager {
           command: "",
           logPath,
           startedAt: now,
-          error:
-            "The recorded service identity could not be verified; leaving it untouched",
+          pid: recorded.pid,
+          error: `The recorded service for ${recorded.endpoint} (pid ${recorded.pid}) could not be verified; leaving it untouched`,
           code: "unverified-record",
         };
       removeServiceState(this.serviceStatePath);
@@ -480,8 +486,8 @@ export class ReMeEnvManager {
           command: "",
           logPath,
           startedAt: now,
-          error:
-            "The recorded service identity could not be verified; leaving it untouched",
+          pid: current.pid,
+          error: `The recorded service for ${endpointValue} (pid ${current.pid}) could not be verified; leaving it untouched`,
           code: "unverified-record",
         };
       } else {

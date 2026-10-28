@@ -178,7 +178,7 @@ export function PythonSection({
             {detection.error ? `: ${detection.error}` : ""}
           </p>
         ) : null}
-        {detection.phase === "error" ||
+        {(detection.phase === "error" && !detected) ||
         (detection.phase === "ready" && envs.length === 0) ? (
           <div className="reme-env-hint">
             <strong>{t("emptyTitle")}</strong>

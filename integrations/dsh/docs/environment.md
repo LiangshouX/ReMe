@@ -71,8 +71,9 @@ The installation is a Host-owned job:
 - Progress is polled by job id, so a second installation for another interpreter cannot replace what you see.
 - **Cancel** stops pip and its build children, and the interpreter stays locked until the process has actually
   exited.
-- The log is written to `$DSH_HOME/reme-memory/install-<job>.log` and its tail is shown in place; install and
-  service logs are rotated to `.log.1` once they pass 5 MB, and only the newest 20 install logs are kept.
+- The log is written to `$DSH_HOME/reme-memory/install-<job>.log` and its tail is shown in place. Each install
+  opens a new file and only the newest 20 are kept; the long-lived service log rotates to `service.log.1` once it
+  passes 5 MB.
 - When the plugin unloads, running jobs are stopped.
 
 ## Workspace `.env`

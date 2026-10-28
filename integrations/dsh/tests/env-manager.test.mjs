@@ -267,7 +267,9 @@ test("shows the rotated service log when the current one is empty", (t) => {
   writeFileSync(join(directory, "service.log"), "");
   writeFileSync(join(directory, "service.log.1"), "Traceback: boom\n");
   const log = manager.serviceLog(directory);
-  assert.equal(log.logPath, join(directory, "service.log"));
+  // The path names the file actually read, so the UI cannot label a rotated
+  // backup as the live log.
+  assert.equal(log.logPath, join(directory, "service.log.1"));
   assert.match(log.lines, /boom/);
 });
 

@@ -316,6 +316,28 @@ test("a dead record is cleared instead of reporting a stale pid", async (t) => {
   assert.equal(readServiceState(statePath), undefined);
 });
 
+test("a probe denied by permissions is not treated as a dead process", async (t) => {
+  const { directory, statePath } = tempState(t, "reme-eperm-");
+  record(statePath);
+  const denied = new Error("operation not permitted");
+  denied.code = "EPERM";
+  const { io } = fakeIO({
+    probePid() {
+      throw denied;
+    },
+  });
+  const status = await serviceStatus(io, {
+    endpoint: ENDPOINT,
+    statePath,
+    logPath: join(directory, "service.log"),
+  });
+  // The process exists but this user cannot signal it (e.g. an elevated
+  // service): the record must survive so it is not orphaned.
+  assert.equal(status.phase, "stopped");
+  assert.equal(status.pid, 777);
+  assert.equal(readServiceState(statePath)?.pid, 777);
+});
+
 test("starts detached with the GBK-safe environment and records state", async (t) => {
   const { directory, statePath } = tempState(t, "reme-start-");
   const { io, calls } = fakeIO();
@@ -442,66 +464,88 @@ test("refuses to stop a process whose identity cannot be verified", async (t) =>
 async function listening(handler, t) {
   const server = createServer(handler);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => server.close());
+  t.after(() => {
+    // fetch keeps pooled sockets alive; close them so the next test is not
+    // racing a server that is still draining.
+    server.closeAllConnections?.();
+    server.close();
+  });
   const address = server.address();
   return `http://127.0.0.1:${address.port}`;
 }
 
+/**
+ * Windows may keep a just-killed process's cwd/log handle for a moment, so an
+ * immediate recursive remove can fail with EBUSY and fail the whole test.
+ */
+async function removeDirectory(path) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      rmSync(path, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = error?.code;
+      if (
+        !["EBUSY", "ENOTEMPTY", "EPERM", "EACCES"].includes(code) ||
+        attempt === 19
+      )
+        return;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+}
+
 test("real IO accepts only a ReMe health report", async (t) => {
-  const reme = await listening((request, response) => {
+  // One server for every case: several servers plus the 3 s probe timeout made
+  // this test fail under parallel load.
+  let authorization = "";
+  const base = await listening((request, response) => {
     response.setHeader("Content-Type", "application/json");
-    if (request.url === "/health_check")
+    const path = String(request.url ?? "").replace(/\/health_check$/, "");
+    if (path === "/reme")
       response.end(
         JSON.stringify({
           success: true,
           metadata: { health: { version: "0.4.2.1", healthy: true } },
         }),
       );
-    else response.end("{}");
-  }, t);
-  const generic = await listening((_request, response) => {
-    response.setHeader("Content-Type", "application/json");
-    response.end("{}");
+    else if (path === "/failing") {
+      response.statusCode = 503;
+      response.end("{}");
+    } else if (path === "/unhappy")
+      response.end(JSON.stringify({ success: false }));
+    else if (path === "/guarded") {
+      authorization = String(request.headers.authorization ?? "");
+      response.end("{}");
+    } else response.end("{}");
   }, t);
 
   const io = createServiceIO();
-  const good = await io.fetchHealth(reme, "");
+  const good = await io.fetchHealth(`${base}/reme`, "");
   assert.equal(good.ok, true);
   assert.equal(good.version, "0.4.2.1");
   assert.equal(good.code, undefined);
 
-  const empty = await io.fetchHealth(generic, "");
+  const empty = await io.fetchHealth(`${base}/generic`, "");
   assert.equal(empty.ok, false);
   assert.match(empty.error, /ReMe health report/);
   // The client localizes the code instead of showing this English sentence.
   assert.equal(empty.code, "not-reme");
 
-  const failing = await listening((_request, response) => {
-    response.statusCode = 503;
-    response.end("{}");
-  }, t);
-  const httpError = await io.fetchHealth(failing, "");
+  const httpError = await io.fetchHealth(`${base}/failing`, "");
   assert.equal(httpError.code, "http-status");
 
-  const unhappy = await listening((_request, response) => {
-    response.end(JSON.stringify({ success: false }));
-  }, t);
-  const reported = await io.fetchHealth(unhappy, "");
+  const reported = await io.fetchHealth(`${base}/unhappy`, "");
   assert.equal(reported.code, "reme-error");
 
   // The Authorization header is actually sent when a token is configured.
-  let authorization = "";
-  const guarded = await listening((request, response) => {
-    authorization = String(request.headers.authorization ?? "");
-    response.end("{}");
-  }, t);
-  await io.fetchHealth(guarded, "secret-token");
+  await io.fetchHealth(`${base}/guarded`, "secret-token");
   assert.equal(authorization, "Bearer secret-token");
 });
 
 test("real IO spawns, identifies and stops a detached process", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "reme-real-service-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  t.after(() => removeDirectory(directory));
   const io = createServiceIO();
   const { pid } = await io.spawnService({
     exe: process.execPath,

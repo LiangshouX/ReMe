@@ -210,8 +210,11 @@ function alive(io: ServiceIO, pid?: number): boolean {
   try {
     io.probePid(pid);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // Only ESRCH proves the process is gone. EPERM means it exists but this
+    // user may not signal it (for example a service DSH started elevated);
+    // treating that as dead would drop the record and orphan the process.
+    return (error as NodeJS.ErrnoException | undefined)?.code === "EPERM";
   }
 }
 
@@ -739,8 +742,7 @@ export function createServiceIO(): ServiceIO {
           child.unref();
         }
       }
-      if (child === undefined) throw new Error("spawn did not start");
-      return { pid: child.pid };
+      return { pid: child?.pid };
     },
     killTree(pid, force = false) {
       if (!isValidPid(pid)) return;

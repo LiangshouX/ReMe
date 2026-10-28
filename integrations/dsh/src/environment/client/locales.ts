@@ -118,6 +118,8 @@ export const envEn = {
     "The previous service could not be stopped; check the log.",
   startErrorUnverifiedRecord:
     "The recorded service identity could not be verified, so it was left untouched; stop it manually, then retry.",
+  startErrorUnverifiedRecordPid:
+    "The recorded service identity could not be verified (PID {pid}), so it was left untouched; stop it manually, then retry.",
   startErrorNoPython: "Select a Python interpreter first.",
   startErrorNotInstalled:
     "reme-ai is not installed in the selected interpreter.",
@@ -301,6 +303,8 @@ export const envZh: typeof envEn = {
   startErrorPreviousNotStopped: "上一次服务未能停止，请查看日志。",
   startErrorUnverifiedRecord:
     "无法验证记录中的进程身份，已保持其运行；请手动停止后重试。",
+  startErrorUnverifiedRecordPid:
+    "无法验证记录中的进程身份（PID {pid}），已保持其运行；请手动停止后重试。",
   startErrorNoPython: "请先选择一个 Python 解释器。",
   startErrorNotInstalled: "所选解释器尚未安装 reme-ai。",
   startErrorVersionTooOld: "已安装的 reme-ai 版本过低，请先升级。",
