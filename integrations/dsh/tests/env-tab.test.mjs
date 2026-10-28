@@ -246,11 +246,11 @@ test("keeps the interpreter list collapsed until asked, then paginates", async (
     renderer.root
       .findAll(
         (node) =>
-          node.type === "button" && textOf(node.props.children).includes("7"),
+          node.type === "button" && textOf(node.props.children).includes("8"),
       )[0]
       .props.onClick();
   });
-  assert.equal(classesOf(renderer.toJSON()).get("reme-env-option"), 7);
+  assert.equal(classesOf(renderer.toJSON()).get("reme-env-option"), 8);
 });
 
 test("marks the suggested interpreter and explains why", async (t) => {
@@ -271,6 +271,13 @@ test("marks the suggested interpreter and explains why", async (t) => {
   });
   const radios = renderer.root.findAll(
     (node) => node.type === "input" && node.props.type === "radio",
+  );
+  // The current interpreter stays in the group, checked and disabled, so
+  // assistive technology can announce the selection.
+  assert.equal(radios.filter((node) => node.props.checked === true).length, 1);
+  assert.equal(
+    radios.find((node) => node.props.checked === true).props.disabled,
+    true,
   );
   const target = radios.find((node) => node.props.disabled === false);
   assert.ok(target);
@@ -442,6 +449,47 @@ test("shows why Stop left the service alone", async (t) => {
   assert.ok(
     texts(renderer.toJSON()).join(" ").includes(envZh.stopUnknownIdentity),
   );
+  // Stop can never succeed for this record, so the record-only way out is
+  // offered next to the explanation.
+  assert.ok(buttonByText(renderer, envZh.forgetRecord));
+});
+
+test("a process that survived the force-kill still offers forgetting the record", async (t) => {
+  const { renderer, restore } = await mount(
+    {},
+    {
+      responses: {
+        "remeEnv/serviceStatus": {
+          phase: "running",
+          managed: true,
+          pid: 98820,
+          version: "0.4.0.9",
+          endpoint: "http://127.0.0.1:2333",
+          logPath: "C:\\Users\\test\\.reme\\service.log",
+        },
+        "remeEnv/serviceStop": {
+          stopped: false,
+          reason: "The service did not exit after the force-kill",
+          code: "not-exited",
+        },
+      },
+    },
+  );
+  t.after(restore);
+  await act(async () => {
+    buttonByText(renderer, envZh.stopService).props.onClick();
+  });
+  await act(async () => {
+    buttonByText(renderer, envZh.stopService).props.onClick();
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+  const copy = texts(renderer.toJSON()).join(" ");
+  assert.ok(copy.includes(envZh.stopNotExited));
+  // Start would refuse with `previous-not-stopped`, so the record must be
+  // forgettable instead of leaving no exit at all.
+  assert.ok(buttonByText(renderer, envZh.forgetRecord));
 });
 
 test("surfaces a rejected settings write", async (t) => {
@@ -1226,7 +1274,7 @@ test("an unverified record reports the pid it refused to touch", async (t) => {
     endpoint: "http://127.0.0.1:2333",
     logPath: "C:\\Users\\test\\.reme\\service.log",
   };
-  const { renderer, restore } = await mount(
+  const { renderer, calls, restore } = await mount(
     {},
     {
       responses: {
@@ -1241,6 +1289,7 @@ test("an unverified record reports the pid it refused to touch", async (t) => {
           logPath: stopped.logPath,
           startedAt: new Date().toISOString(),
         },
+        "remeEnv/serviceForget": { forgotten: true, pid: 6000 },
       },
     },
   );
@@ -1253,6 +1302,27 @@ test("an unverified record reports the pid it refused to touch", async (t) => {
   });
   const copy = texts(renderer.toJSON()).join(" ");
   assert.ok(copy.includes("PID 6000"));
-  assert.ok(copy.includes("6000"));
   assert.equal(copy.includes("The recorded service identity"), false);
+
+  // Both Start and Stop are guaranteed to fail here, so the record-only way
+  // out must be offered instead of leaving the card with no working action.
+  assert.ok(copy.includes(envZh.forgetHint));
+  assert.ok(buttonByText(renderer, envZh.forgetRecord));
+  await act(async () => {
+    buttonByText(renderer, envZh.forgetRecord).props.onClick();
+  });
+  assert.ok(texts(renderer.toJSON()).join(" ").includes(envZh.forgetConfirm));
+  await act(async () => {
+    buttonByText(renderer, envZh.forgetRecord).props.onClick();
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+  assert.ok(
+    calls.rpc.some((call) => call.method === "remeEnv/serviceForget"),
+    "forgetting reaches the Host",
+  );
+  const after = texts(renderer.toJSON()).join(" ");
+  assert.equal(after.includes(envZh.forgetHint), false);
+  assert.equal(after.includes(envZh.forgetRecord), false);
 });

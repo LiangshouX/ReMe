@@ -142,6 +142,11 @@ export const envEn = {
     "This plugin's service holds the port but is not reporting healthy. Stop it to recover.",
   staleNote:
     "A recorded launch is still running but never became healthy. Stop it, then start again.",
+  forgetRecord: "Forget this record",
+  forgetHint:
+    "The plugin cannot clear this service record: Start and Stop both refuse to act on it. Forgetting it deletes only the record; the process keeps running.",
+  forgetConfirm:
+    "Forget the recorded service? This only deletes the plugin's record; it does not stop the process. Continue only if the process is already gone or you will manage it yourself.",
   healthErrorHttp:
     "The endpoint returned an HTTP error, not a ReMe health report.",
   healthErrorNotReme:
@@ -319,6 +324,11 @@ export const envZh: typeof envEn = {
   conflictManagedNote:
     "本插件的服务占用了端口但未通过健康检查；停止它后即可恢复。",
   staleNote: "上次启动的进程仍在运行，但从未就绪；请停止它后重新启动。",
+  forgetRecord: "忘记这条记录",
+  forgetHint:
+    "本插件无法清除这条服务记录：启动与停止都会拒绝操作它。忘记记录只删除记录，进程仍会继续运行。",
+  forgetConfirm:
+    "忘记这条服务记录？此操作只删除本插件的记录，不会结束进程。请确认进程已结束或你将自行管理后再继续。",
   healthErrorHttp: "服务地址返回了 HTTP 错误，而不是 ReMe 健康报告。",
   healthErrorNotReme: "服务地址有响应，但返回的不是 ReMe 健康报告。",
   healthErrorReme: "服务在健康检查中报告了错误。",

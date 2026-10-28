@@ -9,6 +9,7 @@ import { checkReme, MINIMUM_REME, remeVersionAtLeast } from "./reme.js";
 import { createNodeRunner } from "./runner.js";
 import {
   createServiceIO,
+  forgetService,
   processAlive,
   readServiceState,
   removeServiceState,
@@ -36,6 +37,7 @@ import type {
   LlmTestResult,
   PythonDetection,
   RemeCheck,
+  ServiceForgetResult,
   ServiceLog,
   ServiceStartResult,
   ServiceState,
@@ -248,6 +250,30 @@ export class ReMeEnvManager {
   serviceStop(endpoint: string): Promise<ServiceStopResult> {
     const endpointValue = this.endpoint(endpoint);
     const run = this.startQueue.then(() => this.stopLocked(endpointValue));
+    this.startQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /**
+   * Drop this endpoint's service record without touching the process. It is
+   * the escape hatch for a live process whose identity cannot be verified
+   * (Stop and Start both refuse to act on it). Joins the start queue so a
+   * launch that is still being recorded completes first.
+   */
+  serviceForget(endpoint: string): Promise<ServiceForgetResult> {
+    const endpointValue = this.endpoint(endpoint);
+    const run = this.startQueue.then(() => {
+      const result = forgetService({
+        statePath: this.serviceStatePath,
+        endpoint: endpointValue,
+      });
+      if (result.forgotten && this.starting?.endpoint === endpointValue)
+        this.starting = undefined;
+      return result;
+    });
     this.startQueue = run.then(
       () => undefined,
       () => undefined,

@@ -8,6 +8,7 @@ import type {
   LlmTestResult,
   PythonDetection,
   RemeCheck,
+  ServiceForgetResult,
   ServiceLog,
   ServiceStartResult,
   ServiceState,
@@ -175,6 +176,18 @@ export class ReMeEnvGateway extends TypertRemoteService {
     input: { endpoint?: string } | undefined,
   ): Promise<ServiceStopResult> {
     return this.ctx.remeEnv.serviceStop(input?.endpoint ?? "");
+  }
+
+  /**
+   * Drop the service record without signalling the process. This is the way
+   * out of a live record whose identity cannot be verified, where Start and
+   * Stop both refuse to act.
+   */
+  @Remote("serviceForget")
+  async serviceForget(
+    input: { endpoint?: string } | undefined,
+  ): Promise<ServiceForgetResult> {
+    return this.ctx.remeEnv.serviceForget(input?.endpoint ?? "");
   }
 
   /** Tail of the workspace service log for start-failure diagnosis. */

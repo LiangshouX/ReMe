@@ -30,6 +30,11 @@ function stubManager() {
       error: authToken ? "auth token forwarded" : "",
       checkedAt: "",
     }),
+    serviceForget: async (endpoint) => ({
+      forgotten: false,
+      reason: endpoint,
+      code: "no-record",
+    }),
   };
 }
 
@@ -119,4 +124,26 @@ test("health keeps the single-input convention and forwards the token", async ()
   });
   assert.equal(result.endpoint, "http://127.0.0.1:2334");
   assert.equal(result.error, "auth token forwarded");
+});
+
+test("serviceForget keeps the single-input convention and forwards the endpoint", async () => {
+  const { root } = await mounted();
+  const receiver = root.reflect.get("remeEnvGateway", false);
+  const source = Function.prototype.toString.call(
+    Object.getPrototypeOf(receiver).serviceForget,
+  );
+  const open = source.indexOf("(");
+  const close = source.indexOf(")", open + 1);
+  const parameters = source
+    .slice(open + 1, close)
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  assert.deepEqual(parameters, ["input"]);
+
+  const result = await receiver.serviceForget({
+    endpoint: "http://127.0.0.1:2334",
+  });
+  assert.equal(result.forgotten, false);
+  assert.equal(result.reason, "http://127.0.0.1:2334");
 });

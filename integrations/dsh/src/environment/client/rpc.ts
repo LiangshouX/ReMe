@@ -6,6 +6,7 @@ import type {
   LlmTestResult,
   PythonDetection,
   RemeCheck,
+  ServiceForgetResult,
   ServiceLog,
   ServiceStartResult,
   ServiceState,
@@ -26,6 +27,7 @@ export type EnvMethod =
   | "serviceStatus"
   | "serviceStart"
   | "serviceStop"
+  | "serviceForget"
   | "serviceLog";
 
 /**
@@ -256,6 +258,16 @@ export function parseServiceStop(value: unknown): ServiceStopResult {
   optionalStringField(body, "code", what);
   optionalPidField(body, "pid", what);
   return value as unknown as ServiceStopResult;
+}
+
+export function parseServiceForget(value: unknown): ServiceForgetResult {
+  const what = "service forget";
+  const body = record(value, what);
+  booleanField(body, "forgotten", what);
+  optionalStringField(body, "reason", what);
+  optionalStringField(body, "code", what);
+  optionalPidField(body, "pid", what);
+  return value as unknown as ServiceForgetResult;
 }
 
 export function parseServiceLog(value: unknown): ServiceLog {

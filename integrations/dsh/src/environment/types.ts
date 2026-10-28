@@ -193,3 +193,15 @@ export interface ServiceStopResult {
   /** Stable reason the client localizes; `reason` stays for diagnostics. */
   code?: ServiceStopReasonCode;
 }
+
+/**
+ * Outcome of dropping a service record without touching the process. This is
+ * the escape hatch for a live process whose identity cannot be verified: Stop
+ * and Start both refuse to act on it, so the record can only be forgotten.
+ */
+export interface ServiceForgetResult {
+  forgotten: boolean;
+  pid?: number;
+  reason?: string;
+  code?: ServiceStopReasonCode;
+}

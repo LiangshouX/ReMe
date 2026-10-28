@@ -189,10 +189,75 @@ test("an unprovable previous record blocks the start instead of orphaning it", a
   );
   assert.equal(result.started, false);
   assert.equal(result.code, "unverified-record");
+  assert.equal(result.pid, 6000, "the client needs the pid in the message");
   assert.deepEqual(calls.killTree, []);
   assert.equal(calls.spawn.length, 0);
   // Once the evidence is readable again, the same record can be stopped.
   assert.equal(readServiceState(statePath)?.pid, 6000);
+});
+
+test("a provably foreign previous record is discarded and replaced", async (t) => {
+  const { manager, calls, directory, io } = managerIn(t);
+  manager.serviceStatus = async (endpoint) => ({
+    phase: "stopped",
+    managed: false,
+    endpoint,
+    pid: 6000,
+    logPath: join(directory, "service.log"),
+  });
+  const statePath = join(directory, "reme-memory", "service.json");
+  writeServiceState(statePath, {
+    pid: 6000,
+    endpoint: "http://127.0.0.1:2334",
+    workspaceDir: directory,
+    pythonPath: "D:\\env\\python.exe",
+    command: "reme start",
+    startedAt: "2026-10-27T00:00:00.000Z",
+  });
+  // The live pid belongs to something else now, so the record is provably
+  // stale: the start drops it without killing the process and spawns fresh.
+  io.processCommandLine = async () => "python -m http.server 2334";
+  const result = await manager.serviceStart(
+    "http://127.0.0.1:2334",
+    "D:\\env\\python.exe",
+    join(directory, "workspace"),
+  );
+  assert.equal(result.started, true);
+  assert.deepEqual(calls.killTree, [], "a foreign process is never signalled");
+  assert.equal(calls.spawn.length, 1);
+  assert.equal(readServiceState(statePath)?.pid, 5001);
+});
+
+test("forgetting a record removes it without signalling the process", async (t) => {
+  const { manager, calls, directory } = managerIn(t);
+  const statePath = join(directory, "reme-memory", "service.json");
+  writeServiceState(statePath, {
+    pid: 6000,
+    endpoint: "http://127.0.0.1:2334",
+    workspaceDir: directory,
+    pythonPath: "D:\\env\\python.exe",
+    command: "reme start",
+    startedAt: "2026-10-27T00:00:00.000Z",
+  });
+
+  // Another endpoint cannot drop this record.
+  const foreign = await manager.serviceForget("http://127.0.0.1:2333");
+  assert.deepEqual(foreign, {
+    forgotten: false,
+    reason: "The recorded service does not belong to this endpoint",
+    code: "foreign",
+  });
+  assert.equal(readServiceState(statePath)?.pid, 6000);
+
+  const forgotten = await manager.serviceForget("http://127.0.0.1:2334");
+  assert.deepEqual(forgotten, { forgotten: true, pid: 6000 });
+  assert.equal(readServiceState(statePath), undefined);
+  // Forgetting only touches the record: the process is never signalled.
+  assert.deepEqual(calls.killTree, []);
+
+  const again = await manager.serviceForget("http://127.0.0.1:2334");
+  assert.equal(again.forgotten, false);
+  assert.equal(again.code, "no-record");
 });
 
 test("refuses to overwrite a live record owned by another endpoint", async (t) => {

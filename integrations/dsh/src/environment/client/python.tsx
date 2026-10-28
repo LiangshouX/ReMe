@@ -135,14 +135,18 @@ export function PythonSection({
 
   const selectedEnv = selection.selectedEnv;
   const others = envs.filter((env) => env.exe !== selectedPath);
+  // The selected interpreter stays in the radio group, checked and disabled,
+  // so assistive technology can hear which one is current. Dropping it from the
+  // group left every radio unchecked, which conveys no selection at all.
+  const listed = selectedEnv ? [selectedEnv, ...others] : others;
   const filter = query.trim().toLowerCase();
   const matches = filter
-    ? others.filter((env) =>
+    ? listed.filter((env) =>
         `${env.version} ${env.exe} ${originLabel(t, env.origin)} ${env.source}`
           .toLowerCase()
           .includes(filter),
       )
-    : others;
+    : listed;
   const visible = showAll ? matches : matches.slice(0, ENV_PAGE);
   const hidden = matches.length - visible.length;
   const withReme = envs.filter((env) => env.reme?.installed === true).length;
@@ -271,15 +275,24 @@ export function PythonSection({
                         <input
                           type="radio"
                           name="reme-python-interpreter"
-                          checked={false}
-                          disabled={!env.ok || saving !== "" || !writable}
+                          checked={env.exe === selectedPath}
+                          disabled={
+                            env.exe === selectedPath ||
+                            !env.ok ||
+                            saving !== "" ||
+                            !writable
+                          }
                           onChange={() => {
                             selection.select(env);
                             setListOpen(false);
                           }}
                         />
                         <strong>{`Python ${env.version || "?"}`}</strong>
-                        <em>{originLabel(t, env.origin)}</em>
+                        <em>
+                          {env.exe === selectedPath
+                            ? t("currentInterpreter")
+                            : originLabel(t, env.origin)}
+                        </em>
                         <InterpreterBadges
                           t={t}
                           env={env}

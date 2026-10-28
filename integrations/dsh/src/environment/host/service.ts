@@ -15,6 +15,7 @@ import { safeError } from "../../endpoint.js";
 import { serviceEndpointKey } from "../endpoint-key.js";
 import type {
   HealthErrorCode,
+  ServiceForgetResult,
   ServiceStartResult,
   ServiceState,
   ServiceStopResult,
@@ -621,6 +622,41 @@ export async function stopService(
     reason: "The service did not exit after the force-kill",
     code: "not-exited",
   };
+}
+
+/**
+ * Drop the service record without signalling any process.
+ *
+ * Stop and Start both fail closed when ownership cannot be proven. With a live
+ * but unverifiable process (for example one started by an elevated DSH) that
+ * leaves the tab with no working action at all, so forgetting the record is the
+ * explicit way out: the plugin stops managing the process and the user confirms
+ * what to do with it themselves.
+ */
+export function forgetService(options: {
+  statePath: string;
+  endpoint: string;
+}): ServiceForgetResult {
+  const persisted = readServiceState(options.statePath);
+  if (!persisted || !isValidPid(persisted.pid)) {
+    if (persisted) clearServiceState(options.statePath);
+    return {
+      forgotten: false,
+      reason: "No service started by this plugin",
+      code: "no-record",
+    };
+  }
+  if (
+    serviceEndpointKey(persisted.endpoint) !==
+    serviceEndpointKey(options.endpoint)
+  )
+    return {
+      forgotten: false,
+      reason: "The recorded service does not belong to this endpoint",
+      code: "foreign",
+    };
+  clearServiceState(options.statePath);
+  return { forgotten: true, pid: persisted.pid };
 }
 
 /** Node-backed IO: fetch health, probe the port, spawn detached, tree-kill. */

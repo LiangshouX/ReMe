@@ -126,15 +126,17 @@ processes it manages when the Host exits. The plugin owns a small service adapte
   same command by hand. A record for port 2333 never claims a service on port 2444.
 - When the evidence cannot be read (localized `tasklist`/`ps`, missing permissions), ownership stays unproven. Start
   and Stop both leave the process and the record alone: Stop refuses, and Start reports an error instead of dropping
-  the record. Discarding it would orphan a live service that the tab could never stop again. Verify the process
-  yourself, stop it, then retry — or remove `service.json` if it is really gone.
+  the record. Discarding it would orphan a live service that the tab could never stop again. The card then offers
+  **Forget this record**, which deletes only `service.json` and never signals the process; the user confirms what to do
+  with it themselves.
 - A service that occupies the port but fails the health check is reported as a conflict; if it is provably this
   plugin's service, the tab still offers **Stop**.
 - **Stop** tree-kills the recorded process (process group on POSIX, `taskkill /T /F` on Windows), waits for it to
   exit, escalates (POSIX: `SIGTERM` then `SIGKILL`; Windows: force `taskkill` again), and clears the record only
   after the pid is gone. A service started elsewhere stays untouched and is only observed.
-- A recorded launch that is still alive but never became healthy is shown as **Last launch not ready**, with Stop as
-  the way out; it is not shown as "Starting" unless a start from this tab is actually in flight.
+- A recorded launch that is still alive but never became healthy is shown as **Last launch not ready** with both
+  **Stop** and **Start**: Stop clears the record, while Start makes the Host stop a provably owned previous launch or
+  discard a proven-foreign one. It is not shown as "Starting" unless a start from this tab is actually in flight.
 - **Start** is serialized: two requests cannot spawn two services, and a second request observes the launch
   already in flight. Before replacing a recorded launch that never became healthy, Start only kills it when
   ownership is proven; an unproven record is kept and reported, never silently dropped.
@@ -176,8 +178,10 @@ URL (Memory settings) or stop the other program.
 appear there.
 
 **The service shows “Last launch not ready”.** A launch recorded by the plugin is still alive but never answered
-`/health_check` (for example DSH closed while it was booting). Use **Stop** to clear it, then start again. If Stop
-reports that the identity cannot be verified, confirm the process yourself before ending it.
+`/health_check` (for example DSH closed while it was booting). Use **Stop** to clear it and start again. If the pid
+was recycled by another program, that record is provably foreign: **Start** discards it and launches a fresh service.
+If the identity cannot be verified at all, use **Forget this record** — it deletes only the plugin's record and
+leaves the process untouched.
 
 **The service shows as foreign.** It was started outside the plugin, so it is observed but not managed. Stop it
 in its own terminal if you want the tab to manage the next launch.

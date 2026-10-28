@@ -11,6 +11,7 @@ import { StatusBadge } from "./presentation.js";
 import {
   envCall,
   parseHealth,
+  parseServiceForget,
   parseServiceLog,
   parseServiceStart,
   parseServiceState,
@@ -78,8 +79,12 @@ export interface ServiceControl {
   stopping: boolean;
   /** Why the last Stop request left the service alone, if it did. */
   stopError: string;
+  /** The record cannot be cleared by Start/Stop; it can only be forgotten. */
+  canForget: boolean;
+  forgetting: boolean;
   start(): Promise<void>;
   stop(): Promise<void>;
+  forget(): Promise<void>;
   refresh(): void;
   log: ServiceLogView;
   viewLog(): Promise<void>;
@@ -106,6 +111,8 @@ export function useService(
   const [state, setState] = useState<ServiceViewState>({ phase: "checking" });
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState("");
+  const [canForget, setCanForget] = useState(false);
+  const [forgetting, setForgetting] = useState(false);
   const [tick, setTick] = useState(0);
   const [log, setLog] = useState<ServiceLogView>({
     open: false,
@@ -142,6 +149,8 @@ export function useService(
     setState({ phase: "checking" });
     setStopError("");
     setStopping(false);
+    setCanForget(false);
+    setForgetting(false);
   }, [endpoint]);
 
   useEffect(() => () => startController.current?.abort(), []);
@@ -162,6 +171,10 @@ export function useService(
           ),
         );
         if (controller.signal.aborted || request !== statusSeq.current) return;
+        // The record is gone (dead pid cleared by the Host, or just forgotten),
+        // so there is nothing left to forget.
+        if (next.phase === "stopped" && next.pid === undefined)
+          setCanForget(false);
         // A start this tab requested maps "stopped with a live pid" (the Host's
         // "launch still booting" signal) to `starting`; a plain status read
         // keeps the Host's phase, so a leftover process never locks the card.
@@ -232,6 +245,14 @@ export function useService(
             // Otherwise fall back to the reported start error.
           }
         }
+        // The Host refused because the record describes a live process it
+        // cannot stop or verify. Neither Start nor Stop can act on it, so offer
+        // the record-only escape hatch.
+        if (
+          started.code === "unverified-record" ||
+          started.code === "previous-not-stopped"
+        )
+          setCanForget(true);
         applyState({ phase: "error", error: startErrorText(t, started) });
         return;
       }
@@ -262,6 +283,7 @@ export function useService(
           );
           if (controller.signal.aborted) return;
           if (status.phase === "running") {
+            setCanForget(false);
             applyState({ phase: "running", data: status });
             return;
           }
@@ -328,6 +350,12 @@ export function useService(
       );
       if (endpointRef.current !== target) return;
       setStopError(result.stopped ? "" : stopReasonText(t, result));
+      // A record the Host refuses to stop (unverifiable, or a process that
+      // survived the force-kill) cannot be cleared by either button: offer the
+      // record-only way out instead of leaving two actions that both fail.
+      if (result.stopped) setCanForget(false);
+      else if (result.code === "unverified" || result.code === "not-exited")
+        setCanForget(true);
       refresh();
     } catch (error) {
       if (endpointRef.current !== target) return;
@@ -338,6 +366,32 @@ export function useService(
       if (endpointRef.current === target) setStopping(false);
     }
   }, [applyState, endpoint, refresh, rpc, stopping, t]);
+
+  const forget = useCallback(async () => {
+    if (forgetting) return;
+    const target = endpoint;
+    setForgetting(true);
+    try {
+      const result = parseServiceForget(
+        await envCall(rpc, "serviceForget", { endpoint: target }),
+      );
+      if (endpointRef.current !== target) return;
+      if (result.forgotten) {
+        setCanForget(false);
+        setStopError("");
+        // Drop the stale pid immediately; the refresh confirms it.
+        applyState({ phase: "checking" });
+        refresh();
+      } else {
+        setStopError(stopReasonText(t, result));
+      }
+    } catch (error) {
+      if (endpointRef.current !== target) return;
+      applyState({ phase: "error", error: safeError(error) });
+    } finally {
+      if (endpointRef.current === target) setForgetting(false);
+    }
+  }, [applyState, endpoint, forgetting, refresh, rpc, t]);
 
   const viewLog = useCallback(async () => {
     try {
@@ -359,8 +413,11 @@ export function useService(
     state,
     stopping,
     stopError,
+    canForget,
+    forgetting,
     start,
     stop,
+    forget,
     refresh,
     log,
     viewLog,
@@ -452,14 +509,16 @@ export function ServiceSection({
   current: boolean;
   onAutoStart(checked: boolean): void;
 }): JSX.Element {
-  const { state, stopping, stopError, log } = control;
+  const { state, stopping, stopError, canForget, forgetting, log } = control;
   const [confirming, setConfirming] = useState(false);
+  const [forgetConfirm, setForgetConfirm] = useState(false);
   // The confirmation belongs to one phase and endpoint: keeping it open across
   // a transition would re-show "Stop?" on top of a live service later.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setConfirming(false);
-  }, [endpoint, state.phase]);
+    setForgetConfirm(false);
+  }, [endpoint, state.phase, state.data?.pid, canForget]);
   // A conflict can still be our own unhealthy service (booting, wrong token);
   // offer the same Stop affordance instead of leaving the tab without a way
   // out other than editing the record by hand. `stopped`/`starting` with a
@@ -569,6 +628,9 @@ export function ServiceSection({
             {stopError}
           </p>
         ) : null}
+        {current && canForget ? (
+          <p className="reme-settings-muted">{t("forgetHint")}</p>
+        ) : null}
         <div className="reme-env-cta">
           {canStop ? (
             confirming ? (
@@ -619,6 +681,40 @@ export function ServiceSection({
             >
               {t("startService")}
             </button>
+          ) : null}
+          {current && canForget ? (
+            forgetConfirm ? (
+              <div className="reme-env-confirm">
+                <p>{t("forgetConfirm")}</p>
+                <button
+                  type="button"
+                  className="reme-settings-discard"
+                  disabled={forgetting}
+                  onClick={() => {
+                    setForgetConfirm(false);
+                    void control.forget();
+                  }}
+                >
+                  {t("forgetRecord")}
+                </button>
+                <button
+                  type="button"
+                  className="reme-settings-button"
+                  onClick={() => setForgetConfirm(false)}
+                >
+                  {t("cancel")}
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="reme-settings-discard"
+                disabled={forgetting}
+                onClick={() => setForgetConfirm(true)}
+              >
+                {t("forgetRecord")}
+              </button>
+            )
           ) : null}
           <button
             type="button"

@@ -477,19 +477,18 @@ async function listening(handler, t) {
 /**
  * Windows may keep a just-killed process's cwd/log handle for a moment, so an
  * immediate recursive remove can fail with EBUSY and fail the whole test.
+ * Only EBUSY/ENOTEMPTY are transient; anything else (and a persistent lock)
+ * fails loudly instead of leaking a temporary directory.
  */
 async function removeDirectory(path) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  for (let attempt = 0; ; attempt += 1) {
     try {
       rmSync(path, { recursive: true, force: true });
       return;
     } catch (error) {
       const code = error?.code;
-      if (
-        !["EBUSY", "ENOTEMPTY", "EPERM", "EACCES"].includes(code) ||
-        attempt === 19
-      )
-        return;
+      if ((code !== "EBUSY" && code !== "ENOTEMPTY") || attempt >= 19)
+        throw error;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
   }
