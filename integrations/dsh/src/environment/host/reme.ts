@@ -1,6 +1,7 @@
-import { dirname, isAbsolute, join } from "node:path";
+import { win32 } from "node:path";
 
 import type { RemeCheck, RemeProbe } from "../types.js";
+import { pathOf } from "./paths.js";
 import type { RunCommand } from "./runner.js";
 
 /** Minimum reme-ai version this DSH integration is tested against. */
@@ -67,18 +68,21 @@ export async function probeReme(
 
 /** Locate the console script installed beside the interpreter. */
 export function remeCliPath(io: RemeIO, pythonPath: string): string {
-  const directory = dirname(pythonPath);
+  // The interpreter path may be written for another platform than the host, so
+  // its flavor supplies the separators and joins.
+  const path = io.platform === "win32" ? win32 : pathOf(pythonPath);
+  const directory = path.dirname(pythonPath);
   // venv interpreters live inside the scripts/bin directory; conda ones do not.
   const scriptsDir =
     io.platform === "win32"
       ? /[\\/]scripts$/i.test(directory)
         ? directory
-        : join(directory, "Scripts")
+        : path.join(directory, "Scripts")
       : directory;
-  const candidate =
-    io.platform === "win32"
-      ? join(scriptsDir, "reme.exe")
-      : join(scriptsDir, "reme");
+  const candidate = path.join(
+    scriptsDir,
+    io.platform === "win32" ? "reme.exe" : "reme",
+  );
   return io.exists(candidate) ? candidate : "";
 }
 
@@ -91,7 +95,7 @@ export async function checkReme(
   pythonPath: string,
 ): Promise<RemeCheck> {
   const path = pythonPath.trim();
-  if (!path || !isAbsolute(path)) {
+  if (!path || !pathOf(path).isAbsolute(path)) {
     return {
       installed: false,
       version: "",

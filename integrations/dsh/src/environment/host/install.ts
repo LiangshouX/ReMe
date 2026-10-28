@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 
 import type { InstallPhase, InstallRequest, InstallStatus } from "../types.js";
+import { pathOf } from "./paths.js";
 
 export interface InstallChild {
   pid: number | undefined;
@@ -145,7 +146,9 @@ export class InstallJobs {
 
   start(request: InstallRequest): InstallStatus {
     const pythonPath = (request.pythonPath ?? "").trim();
-    if (!pythonPath || !isAbsolute(pythonPath))
+    // The interpreter may be written for another platform than the host, so its
+    // own flavor decides whether the path is absolute.
+    if (!pythonPath || !pathOf(pythonPath).isAbsolute(pythonPath))
       throw new TypeError(
         "Install requires an absolute Python interpreter path",
       );

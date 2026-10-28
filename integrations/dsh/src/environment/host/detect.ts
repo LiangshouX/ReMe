@@ -1,7 +1,7 @@
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { join as posixJoin } from "node:path/posix";
+import { win32 } from "node:path";
 
 import { safeError } from "../../endpoint.js";
+import { pathOf } from "./paths.js";
 import type { RunCommand, RunResult } from "./runner.js";
 import { probeReme, remeVersionAtLeast } from "./reme.js";
 import type { PythonDetection, PythonEnv, PythonOrigin } from "../types.js";
@@ -177,15 +177,19 @@ export type CondaRunner = (
 
 /** Derive the conda installation root from any conda executable path. */
 export function condaRootFromPath(condaPath: string): string {
-  const dir = dirname(condaPath);
+  // The path may be written for another platform than the host, so its flavor
+  // decides the semantics: dirname must not depend on where tests run.
+  const path = pathOf(condaPath);
+  const dir = path.dirname(condaPath);
   const lower = dir.toLowerCase();
   if (lower.endsWith("\\library\\bin") || lower.endsWith("/library/bin"))
-    return dirname(dirname(dir));
+    return path.dirname(path.dirname(dir));
   if (lower.endsWith("\\scripts") || lower.endsWith("/scripts"))
-    return dirname(dir);
+    return path.dirname(dir);
   if (lower.endsWith("\\condabin") || lower.endsWith("/condabin"))
-    return dirname(dir);
-  if (lower.endsWith("\\bin") || lower.endsWith("/bin")) return dirname(dir);
+    return path.dirname(dir);
+  if (lower.endsWith("\\bin") || lower.endsWith("/bin"))
+    return path.dirname(dir);
   return "";
 }
 
@@ -202,7 +206,8 @@ export function makeCondaRunner(
 ): CondaRunner {
   const root = condaRootFromPath(condaPath);
   const exeCandidates: string[] = [];
-  if (root && windows) exeCandidates.push(join(root, "Scripts", "conda.exe"));
+  if (root && windows)
+    exeCandidates.push(win32.join(root, "Scripts", "conda.exe"));
   if (!/\.(bat|cmd)$/i.test(condaPath)) exeCandidates.push(condaPath);
   return async (args, timeoutMs = 15_000) => {
     for (const candidate of exeCandidates) {
@@ -222,22 +227,23 @@ export function makeCondaRunner(
 
 function commonCondaPaths(io: DetectIO, windows: boolean): string[] {
   const programData = io.env["ProgramData"] ?? "";
+  const path = windows ? win32 : pathOf(io.homedir);
   const candidates = windows
     ? [
-        join(io.homedir, "miniconda3", "Scripts", "conda.exe"),
-        join(io.homedir, "anaconda3", "Scripts", "conda.exe"),
-        join(programData, "miniconda3", "Scripts", "conda.exe"),
-        join(programData, "anaconda3", "Scripts", "conda.exe"),
+        path.join(io.homedir, "miniconda3", "Scripts", "conda.exe"),
+        path.join(io.homedir, "anaconda3", "Scripts", "conda.exe"),
+        path.join(programData, "miniconda3", "Scripts", "conda.exe"),
+        path.join(programData, "anaconda3", "Scripts", "conda.exe"),
       ]
     : [
-        join(io.homedir, "miniconda3", "bin", "conda"),
-        join(io.homedir, "anaconda3", "bin", "conda"),
-        join(io.homedir, "miniforge3", "bin", "conda"),
+        path.join(io.homedir, "miniconda3", "bin", "conda"),
+        path.join(io.homedir, "anaconda3", "bin", "conda"),
+        path.join(io.homedir, "miniforge3", "bin", "conda"),
         "/opt/miniconda3/bin/conda",
         "/opt/anaconda3/bin/conda",
         "/opt/homebrew/Caskroom/miniconda/base/bin/conda",
       ];
-  return candidates.filter((path) => isAbsolute(path));
+  return candidates.filter((candidate) => path.isAbsolute(candidate));
 }
 
 /* ------------------------------------------------------------------ */
@@ -274,15 +280,19 @@ function addCandidate(
 }
 
 function pathContains(dir: string, exe: string, windows: boolean): boolean {
-  const base = normalizeExe(resolve(dir), windows);
-  const full = normalizeExe(resolve(exe), windows);
+  const path = windows ? win32 : pathOf(exe);
+  const base = normalizeExe(path.resolve(dir), windows);
+  const full = normalizeExe(path.resolve(exe), windows);
   return full.startsWith(`${base}${windows ? "\\" : "/"}`);
 }
 
 /** prefix of an interpreter install from its executable location. */
 function pythonPrefix(exe: string, windows: boolean): string {
-  const parent = dirname(exe);
-  return windows || basename(parent) !== "bin" ? parent : dirname(parent);
+  const path = windows ? win32 : pathOf(exe);
+  const parent = path.dirname(exe);
+  return windows || path.basename(parent) !== "bin"
+    ? parent
+    : path.dirname(parent);
 }
 
 function isVenv(info: VerifyInfo, windows: boolean): boolean {
@@ -312,7 +322,11 @@ function classifyOrigin(
   for (const envPath of conda.envs) {
     if (envPath === conda.root) continue;
     if (pathContains(envPath, info.exe, windows))
-      return { kind: "conda", envName: basename(envPath), root: envPath };
+      return {
+        kind: "conda",
+        envName: (windows ? win32 : pathOf(envPath)).basename(envPath),
+        root: envPath,
+      };
   }
   if (conda.root && pathContains(conda.root, info.exe, windows))
     return { kind: "conda", envName: "base", root: conda.root };
@@ -321,8 +335,8 @@ function classifyOrigin(
     return {
       kind: "venv",
       baseExe: windows
-        ? join(info.basePrefix, "python.exe")
-        : posixJoin(info.basePrefix, "bin", "python3"),
+        ? win32.join(info.basePrefix, "python.exe")
+        : pathOf(info.basePrefix).join(info.basePrefix, "bin", "python3"),
     };
   if ([...candidate.sources].some((source) => source.startsWith("registry")))
     return { kind: "python.org" };
@@ -491,8 +505,8 @@ export async function detectPythonEnvs(io: DetectIO): Promise<PythonDetection> {
         addCandidate(
           candidates,
           windows
-            ? join(envPath, "python.exe")
-            : posixJoin(envPath, "bin", "python3"),
+            ? win32.join(envPath, "python.exe")
+            : pathOf(envPath).join(envPath, "bin", "python3"),
           "conda env list",
           windows,
         );

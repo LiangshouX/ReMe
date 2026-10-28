@@ -8,6 +8,7 @@ import {
   checkReme,
   compareVersions,
   parseRemeVersion,
+  remeCliPath,
   remeVersionAtLeast,
 } from "../dist/environment/host/reme.js";
 import {
@@ -189,6 +190,35 @@ function makeJobs(t) {
   const jobs = new InstallJobs({ spawner, logDir: directory });
   return { jobs, children, directory };
 }
+
+test("finds the reme CLI beside a Windows interpreter on any host", () => {
+  const seen = [];
+  const cli = remeCliPath(
+    {
+      run: async () => ({ code: 0, stdout: "", stderr: "" }),
+      platform: "win32",
+      exists: (path) => {
+        seen.push(path);
+        return path.endsWith("reme.exe");
+      },
+    },
+    "C:\\env\\python.exe",
+  );
+  assert.equal(cli, "C:\\env\\Scripts\\reme.exe");
+  assert.deepEqual(seen, ["C:\\env\\Scripts\\reme.exe"]);
+});
+
+test("finds the reme CLI in a POSIX bin directory", () => {
+  const cli = remeCliPath(
+    {
+      run: async () => ({ code: 0, stdout: "", stderr: "" }),
+      platform: "linux",
+      exists: () => true,
+    },
+    "/home/u/venv/bin/python",
+  );
+  assert.equal(cli, "/home/u/venv/bin/reme");
+});
 
 test("tracks a successful pip job through exit", (t) => {
   const { jobs, children, directory } = makeJobs(t);

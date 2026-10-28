@@ -291,6 +291,24 @@ test("parses conda json output defensively", () => {
   assert.equal(parseCondaRoot("garbage"), "");
 });
 
+test("resolves every fixture with its own platform's path semantics", () => {
+  // The flavor comes from the path, not from the host running the test, so
+  // these assertions hold on Windows, macOS and Linux alike.
+  assert.equal(
+    condaRootFromPath("D:\\ProgramFils\\Miniconda\\Scripts\\conda.exe"),
+    "D:\\ProgramFils\\Miniconda",
+  );
+  assert.equal(
+    condaRootFromPath("D:\\ProgramFils\\Miniconda\\condabin\\conda.bat"),
+    "D:\\ProgramFils\\Miniconda",
+  );
+  assert.equal(
+    condaRootFromPath("/opt/homebrew/Caskroom/miniconda/base/bin/conda"),
+    "/opt/homebrew/Caskroom/miniconda/base",
+  );
+  assert.equal(condaRootFromPath("D:\\mc\\conda.bat"), "");
+});
+
 test("derives conda roots and prefers the real conda.exe over the .bat", async () => {
   assert.equal(condaRootFromPath("D:\\mc\\Library\\bin\\conda.bat"), "D:\\mc");
   assert.equal(condaRootFromPath("D:\\mc\\Scripts\\conda.exe"), "D:\\mc");
