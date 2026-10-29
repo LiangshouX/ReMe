@@ -114,8 +114,8 @@ DSH settings.
   reported as broken. The base URL is used as the provider's own SDK builds it, so a base that already carries the
   version suffix fails in the probe exactly as it fails in the service.
 - ReMe reaches xAI through its gRPC SDK, so the xAI probe is a REST-level approximation of that channel.
-- The probe reads the `.env` on disk, so a backend that is only picked in the form is not tested before the file is
-  saved; the button says so while it waits.
+- The probe reads the `.env` on disk, so a configuration that is only picked in the form is not tested before the
+  file is saved; the button says so while it waits.
 - Drafts are bound to the workspace they were typed in: switching the workspace drops them, so a key typed for
   one workspace cannot be saved into another.
 

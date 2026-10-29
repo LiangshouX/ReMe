@@ -298,7 +298,7 @@ test("the probe builds a valid request for every backend", async (t) => {
     const snippet = llmProbeSnippet(protocol);
     assert.doesNotMatch(
       snippet,
-      /base\[:|endswith/,
+      /base\s*\[|base\.endswith\(|base\.removesuffix\(/,
       `${backend} does not rewrite the configured base`,
     );
   }

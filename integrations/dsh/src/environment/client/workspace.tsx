@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { StatusRpc } from "../../client/status-page.js";
 import { safeError } from "../../endpoint.js";
+import { llmBackendOf } from "../llm-backend.js";
 import type { EnvEntry, EnvSummary, LlmTestResult } from "../types.js";
 import { fill, type EnvKey, type EnvTranslator } from "./locales.js";
 import { EnvField } from "./presentation.js";
@@ -415,13 +416,26 @@ export function WorkspaceSection({
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const { env, llmTest, result } = workspace;
-  // The probe reads the saved .env, so a backend that is only picked in the
-  // form would be tested against the one still on disk. The button says so
-  // instead of quietly testing the old backend.
-  const savedBackend =
-    env.data?.entries.find((entry) => entry.key === "LLM_BACKEND")?.value ?? "";
+  // The probe reads the saved .env, so a configuration that is only picked in
+  // the form would be tested against the one still on disk. The button waits
+  // instead of quietly testing the old configuration.
+  const savedValue = (key: string): string =>
+    env.data?.entries.find((entry) => entry.key === key)?.value ?? "";
+  // The backend falls back to the default on both sides, so picking the
+  // default in the form is not a change at all.
   const backendChanged =
-    workspace.value("LLM_BACKEND").trim() !== savedBackend.trim();
+    llmBackendOf(workspace.value("LLM_BACKEND")) !==
+    llmBackendOf(savedValue("LLM_BACKEND"));
+  // The model and the base URL travel as plain text, so they compare by
+  // value. The key is write-only: a typed one is the only sign that it
+  // differs from the file, which still holds the stored key.
+  const configChanged =
+    backendChanged ||
+    workspace.value("LLM_MODEL_NAME").trim() !==
+      savedValue("LLM_MODEL_NAME").trim() ||
+    workspace.value("LLM_BASE_URL").trim() !==
+      savedValue("LLM_BASE_URL").trim() ||
+    workspace.value("LLM_API_KEY") !== "";
 
   return (
     <section className={`reme-env-card${open ? "" : " collapsed"}`}>
@@ -515,7 +529,7 @@ export function WorkspaceSection({
                   type="button"
                   className="reme-settings-button"
                   disabled={
-                    !pythonPath || llmTest.phase === "running" || backendChanged
+                    !pythonPath || llmTest.phase === "running" || configChanged
                   }
                   onClick={() => void workspace.testLlm(pythonPath)}
                 >
@@ -525,7 +539,7 @@ export function WorkspaceSection({
                       : "testLlmButton",
                   )}
                 </button>
-                {backendChanged ? (
+                {configChanged ? (
                   <span className="reme-settings-muted">
                     {t("testLlmSaveFirst")}
                   </span>

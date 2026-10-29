@@ -11,6 +11,7 @@ import {
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
 import { safeError } from "../../endpoint.js";
+import { DEFAULT_LLM_BACKEND, llmBackendOf } from "../llm-backend.js";
 import type { EnvSummary, LlmTestResult } from "../types.js";
 import type { RunCommand } from "./runner.js";
 
@@ -285,12 +286,11 @@ export const LLM_PROTOCOLS: Record<string, LlmProtocol> = {
 };
 
 /** The backend ReMe itself falls back to when `.env` names none. */
-export const DEFAULT_LLM_BACKEND = "openai";
+export { DEFAULT_LLM_BACKEND };
 
 /** The protocol a backend speaks; unknown backends use ReMe's default. */
 export function llmProtocolFor(backend: string): LlmProtocol {
-  const name = (backend ?? "").trim().toLowerCase();
-  return LLM_PROTOCOLS[name] ?? OPENAI_PROTOCOL;
+  return LLM_PROTOCOLS[llmBackendOf(backend)] ?? OPENAI_PROTOCOL;
 }
 
 /**

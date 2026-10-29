@@ -1539,6 +1539,97 @@ test("the LLM test waits for the backend that is saved on disk", async (t) => {
   );
 });
 
+test("the LLM test waits for every unsaved probe setting", async (t) => {
+  // The probe reads the whole .env from disk, so a changed model or key is
+  // just as untested as a changed backend.
+  const { renderer, restore } = await mount();
+  t.after(restore);
+  await act(async () => {
+    buttonByText(renderer, envZh.expand).props.onClick();
+  });
+  const model = renderer.root.findAll(
+    (node) => node.type === "input" && node.props.value === "qwen3.7-plus",
+  );
+  assert.ok(model.length > 0, "the model field");
+  await act(async () => {
+    model[0].props.onChange({ target: { value: "another-model" } });
+  });
+  assert.equal(
+    buttonByText(renderer, envZh.testLlmButton).props.disabled,
+    true,
+    "an unsaved model is not the model the probe would use",
+  );
+
+  // A typed key is not on disk either.
+  const fresh = await mount();
+  try {
+    await act(async () => {
+      buttonByText(fresh.renderer, envZh.expand).props.onClick();
+    });
+    const key = fresh.renderer.root.findAll(
+      (node) => node.type === "input" && node.props.type === "password",
+    )[0];
+    await act(async () => {
+      key.props.onChange({ target: { value: "sk-typed" } });
+    });
+    assert.equal(
+      buttonByText(fresh.renderer, envZh.testLlmButton).props.disabled,
+      true,
+      "an unsaved key is not the key the probe would use",
+    );
+  } finally {
+    fresh.restore();
+  }
+});
+
+test("picking the default backend is not treated as a change", async (t) => {
+  // The .env names no backend, so ReMe and the probe both use the default;
+  // choosing it in the form changes nothing.
+  const { renderer, restore } = await mount(
+    {},
+    {
+      responses: {
+        "remeEnv/readEnv": {
+          workspaceDir: "C:\\Users\\test\\.reme",
+          exists: true,
+          envPath: "C:\\Users\\test\\.reme\\.env",
+          entries: [
+            {
+              key: "LLM_MODEL_NAME",
+              value: "qwen3.7-plus",
+              masked: "qwen3.7-plus",
+              secret: false,
+              set: true,
+            },
+          ],
+        },
+      },
+    },
+  );
+  t.after(restore);
+  await act(async () => {
+    buttonByText(renderer, envZh.expand).props.onClick();
+  });
+  const backend = renderer.root
+    .findAll((node) => node.type === "select")
+    // The LLM backend is the only select that offers the native providers;
+    // the mirror and the embedding backend have their own options.
+    .find((node) =>
+      node.props.children
+        .flat(Infinity)
+        .some((option) => option?.props?.value === "anthropic"),
+    );
+  assert.ok(backend, "the LLM backend select");
+  await act(async () => {
+    backend.props.onChange({ target: { value: "openai" } });
+  });
+  assert.equal(
+    buttonByText(renderer, envZh.testLlmButton).props.disabled,
+    false,
+    "the default backend is what the probe already uses",
+  );
+});
+
 test("a restored job is matched by the interpreter's own path semantics", async (t) => {
   // The Host reports the interpreter with its own spelling; a Windows path
   // folds case and separators, so the job is still the one on screen.
