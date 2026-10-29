@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   envSummary,
   LLM_PROTOCOLS,
+  llmProbeSnippet,
   llmProtocolFor,
   maskSecret,
   mergeEnvFile,
@@ -294,9 +295,10 @@ test("the probe builds a valid request for every backend", async (t) => {
       protocol.path.startsWith("/"),
       `${backend} path is appended to the base`,
     );
-    assert.equal(
-      protocol.trimSuffix,
-      undefined,
+    const snippet = llmProbeSnippet(protocol);
+    assert.doesNotMatch(
+      snippet,
+      /base\[:|endswith/,
       `${backend} does not rewrite the configured base`,
     );
   }
@@ -346,6 +348,12 @@ test("a backend that ignores LLM_BASE_URL is probed with its own endpoint", asyn
   const stale = await probe("ollama", "https://stale.invalid");
   assert.match(stale, /localhost:11434/);
   assert.doesNotMatch(stale, /stale\.invalid/);
+
+  // xAI is the same case: its credential carries an api host, not a base URL.
+  const xai = await probe("xai", "https://stale.invalid");
+  assert.match(xai, /api\.x\.ai/);
+  assert.doesNotMatch(xai, /stale\.invalid/);
+  assert.doesNotMatch(xai, /env\.get\("LLM_BASE_URL"/);
 
   // Ollama needs neither a base URL nor a key.
   const ollama = await probe("ollama");

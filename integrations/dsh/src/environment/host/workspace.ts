@@ -202,10 +202,11 @@ export interface LlmProtocol {
    *
    * ReMe's credentials decide this. The OpenAI-compatible providers and
    * Anthropic read `LLM_BASE_URL` from the workspace `.env`, so the probe
-   * reads it too. Gemini and Ollama ignore that variable and use their own
-   * endpoint, so the probe must use that one as well: a stale value left in
-   * the `.env` would otherwise send the probe to a host the service never
-   * uses, and report a working configuration as broken.
+   * reads it too. Gemini, Ollama and xAI ignore that variable — their
+   * credentials carry their own endpoint — so the probe must use that one as
+   * well: a stale value left in the `.env` would otherwise send the probe to
+   * a host the service never uses, and report a working configuration as
+   * broken.
    */
   baseSource: "env" | "provider";
   /** The provider's own endpoint; used when `baseSource` is `provider`. */
@@ -238,7 +239,6 @@ export const LLM_PROTOCOLS: Record<string, LlmProtocol> = {
   dashscope: OPENAI_PROTOCOL,
   deepseek: OPENAI_PROTOCOL,
   moonshot: OPENAI_PROTOCOL,
-  xai: OPENAI_PROTOCOL,
   anthropic: {
     path: "/v1/messages",
     authHeader: "x-api-key",
@@ -267,6 +267,20 @@ export const LLM_PROTOCOLS: Record<string, LlmProtocol> = {
     keyRequired: false,
     baseSource: "provider",
     providerBase: "http://localhost:11434",
+  },
+  xai: {
+    // ReMe reaches xAI through its gRPC SDK, so this OpenAI-compatible
+    // endpoint is a connectivity approximation for that backend. It is still
+    // the documented REST API of the same provider and the same key, and it
+    // keeps the probe from reporting a working configuration as broken.
+    path: "/chat/completions",
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    headers: {},
+    body: OPENAI_CHAT_BODY,
+    keyRequired: true,
+    baseSource: "provider",
+    providerBase: "https://api.x.ai/v1",
   },
 };
 

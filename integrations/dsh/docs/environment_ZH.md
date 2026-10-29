@@ -84,11 +84,16 @@ ReMe 在服务启动时读取 workspace 目录下的 `.env`；标签页从不把
 - 写入是原子且仅属主可读写的（POSIX 上为 0600）；旧文件会保留为 `.env.bak`，因此一次失败的保存不会丢掉其它键。
 - **测试 LLM 连接**在 workspace 内、用所选解释器发送一次只需 1 个 token 的请求，并对 `401`/`403`
   （密钥）、`404`（模型名或 Base URL）与网络错误给出提示。请求按 `.env` 里的 `LLM_BACKEND` 选择协议：
-  `openai`、`dashscope`、`deepseek`、`moonshot`、`xai` 走 OpenAI 兼容的 `/chat/completions`（Bearer 认证），
+  `openai`、`dashscope`、`deepseek`、`moonshot` 走 OpenAI 兼容的 `/chat/completions`（Bearer 认证），
   `anthropic` 走 `/v1/messages`（`x-api-key`），`gemini` 走 `/v1beta/models/<model>:generateContent`
-  （`x-goog-api-key`），`ollama` 走 `/api/chat`（本地服务无需密钥）。Gemini 与 Ollama 一律使用服务商自有地址探测，
-  因为 ReMe 为它们生成的凭据并不读取 `LLM_BASE_URL`；`.env` 里残留的旧值不会把探测引到服务根本不会访问的主机。
-  Base URL 的拼接方式与服务商 SDK 完全一致，因此已经带版本后缀的地址在探测与服务中都会同样失败。
+  （`x-goog-api-key`），`ollama` 走 `/api/chat`（本地服务无需密钥），`xai` 走 `api.x.ai` 上 OpenAI 兼容的
+  `/chat/completions`。
+- Base URL 的来源与 ReMe 自身的凭据保持一致：`LLM_BASE_URL` 只对 OpenAI 兼容族与 Anthropic 生效，Gemini、Ollama
+  与 xAI 自带地址、并不读取该变量。因此 `.env` 里残留的旧值不会把探测引到服务根本不会访问的主机，ReMe 能接受的
+  配置也不会被报成故障。Base URL 的拼接方式与服务商 SDK 完全一致，因此已经带版本后缀的地址在探测与服务中都会
+  同样失败。
+- ReMe 通过 gRPC SDK 连接 xAI，因此 xAI 的探测只是该通道在 REST 层面的近似。
+- 探测读取的是磁盘上的 `.env`，所以只在表单里切换后端而未保存时不会发起测试；等待期间按钮会给出提示。
 - 草稿与输入它的 workspace 绑定：切换 workspace 会丢弃草稿，因此为某个 workspace 输入的密钥不会被保存到另一个。
 
 ## 连接测试

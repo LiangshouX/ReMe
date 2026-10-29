@@ -94,6 +94,8 @@ export const envEn = {
   saveEnvFailed: "Saving failed",
   testLlmButton: "Test LLM connection",
   testingLlm: "Testing…",
+  testLlmSaveFirst:
+    "Save the .env first: the test uses the backend that is saved on disk.",
   llmOk: "LLM reachable ({ms} ms)",
   llmFailed: "LLM test failed",
   serviceHint:
@@ -291,6 +293,7 @@ export const envZh: typeof envEn = {
   saveEnvFailed: "保存失败",
   testLlmButton: "测试 LLM 连接",
   testingLlm: "正在测试…",
+  testLlmSaveFirst: "请先保存 .env：测试使用的是磁盘上已保存的后端。",
   llmOk: "LLM 连接正常（{ms} ms）",
   llmFailed: "LLM 测试失败",
   serviceHint: "启动或停止本地 ReMe 服务；DSH 关闭后服务仍会保持运行。",

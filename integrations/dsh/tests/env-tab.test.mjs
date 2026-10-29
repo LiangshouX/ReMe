@@ -1508,6 +1508,37 @@ test("a running job is restored for the selected interpreter", async (t) => {
   assert.equal(lookups[0].input.pythonPath, SUGGESTED);
 });
 
+test("the LLM test waits for the backend that is saved on disk", async (t) => {
+  const { renderer, restore } = await mount();
+  t.after(restore);
+  await act(async () => {
+    buttonByText(renderer, envZh.expand).props.onClick();
+  });
+  // The saved backend is the one the probe would use.
+  assert.equal(
+    buttonByText(renderer, envZh.testLlmButton).props.disabled,
+    false,
+  );
+
+  // Picking another backend in the form does not change the file on disk, so
+  // the test would probe the old one.
+  const backend = renderer.root
+    .findAll((node) => node.type === "select")
+    .find((node) => node.props.value === "dashscope");
+  assert.ok(backend, "the LLM backend select");
+  await act(async () => {
+    backend.props.onChange({ target: { value: "anthropic" } });
+  });
+  assert.ok(
+    texts(renderer.toJSON()).join(" ").includes(envZh.testLlmSaveFirst),
+    "the button explains that the .env has to be saved first",
+  );
+  assert.equal(
+    buttonByText(renderer, envZh.testLlmButton).props.disabled,
+    true,
+  );
+});
+
 test("a restored job is matched by the interpreter's own path semantics", async (t) => {
   // The Host reports the interpreter with its own spelling; a Windows path
   // folds case and separators, so the job is still the one on screen.

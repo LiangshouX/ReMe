@@ -415,6 +415,13 @@ export function WorkspaceSection({
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const { env, llmTest, result } = workspace;
+  // The probe reads the saved .env, so a backend that is only picked in the
+  // form would be tested against the one still on disk. The button says so
+  // instead of quietly testing the old backend.
+  const savedBackend =
+    env.data?.entries.find((entry) => entry.key === "LLM_BACKEND")?.value ?? "";
+  const backendChanged =
+    workspace.value("LLM_BACKEND").trim() !== savedBackend.trim();
 
   return (
     <section className={`reme-env-card${open ? "" : " collapsed"}`}>
@@ -507,7 +514,9 @@ export function WorkspaceSection({
                 <button
                   type="button"
                   className="reme-settings-button"
-                  disabled={!pythonPath || llmTest.phase === "running"}
+                  disabled={
+                    !pythonPath || llmTest.phase === "running" || backendChanged
+                  }
                   onClick={() => void workspace.testLlm(pythonPath)}
                 >
                   {t(
@@ -516,6 +525,11 @@ export function WorkspaceSection({
                       : "testLlmButton",
                   )}
                 </button>
+                {backendChanged ? (
+                  <span className="reme-settings-muted">
+                    {t("testLlmSaveFirst")}
+                  </span>
+                ) : null}
                 <span className="reme-settings-result" role="status">
                   {result.kind === "saved" ? (
                     <span className="reme-settings-success">
