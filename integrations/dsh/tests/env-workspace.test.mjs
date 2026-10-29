@@ -286,26 +286,26 @@ test("the probe builds a valid request for every backend", async (t) => {
         `${backend} carries the model in the body`,
       );
     }
-    // A base URL that already carries the provider's version suffix must not
-    // be doubled.
-    if (protocol.trimSuffix) {
-      const base = `https://provider.invalid${protocol.trimSuffix}`;
-      const trimmed = base.endsWith(protocol.trimSuffix)
-        ? base.slice(0, -protocol.trimSuffix.length)
-        : base;
-      const url = `${trimmed}${protocol.path}`;
-      assert.ok(
-        !url.includes(`${protocol.trimSuffix}${protocol.trimSuffix}`),
-        `${backend} does not double its version suffix`,
-      );
-    }
+    // The URL is the base plus the provider's path, exactly as the provider's
+    // own SDK builds it: nothing is trimmed away, so a base that already
+    // carries the version suffix fails in the probe just like it fails in the
+    // service.
+    assert.ok(
+      protocol.path.startsWith("/"),
+      `${backend} path is appended to the base`,
+    );
+    assert.equal(
+      protocol.trimSuffix,
+      undefined,
+      `${backend} does not rewrite the configured base`,
+    );
   }
 });
 
 test("a backend that ignores LLM_BASE_URL is probed with its own endpoint", async (t) => {
-  // ReMe's Gemini and Ollama credentials do not read LLM_BASE_URL, so a
-  // configuration without it is the normal one. The probe must not report it
-  // as incomplete.
+  // ReMe's Gemini and Ollama credentials do not read LLM_BASE_URL, so the
+  // probe must not read it either: a stale value left in the .env would send
+  // the probe to a host the service never calls.
   const directory = mkdtempSync(join(tmpdir(), "reme-llm-base-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const calls = [];
@@ -319,13 +319,14 @@ test("a backend that ignores LLM_BASE_URL is probed with its own endpoint", asyn
       };
     },
   };
-  const probe = async (backend) => {
+  const probe = async (backend, baseUrl) => {
     writeFileSync(
       join(directory, ".env"),
       [
         `LLM_BACKEND=${backend}`,
         "LLM_MODEL_NAME=test-model",
         "LLM_API_KEY=sk-test",
+        ...(baseUrl === undefined ? [] : [`LLM_BASE_URL=${baseUrl}`]),
       ].join("\n"),
     );
     calls.length = 0;
@@ -336,9 +337,15 @@ test("a backend that ignores LLM_BASE_URL is probed with its own endpoint", asyn
     return String(calls[0]?.args[1] ?? "");
   };
 
+  // Without a base URL the provider's own endpoint is used.
   const gemini = await probe("gemini");
   assert.match(gemini, /generativelanguage\.googleapis\.com/);
-  assert.doesNotMatch(gemini, /LLM_BASE_URL"\)\)/);
+  assert.doesNotMatch(gemini, /env\.get\("LLM_BASE_URL"/);
+
+  // A stale base URL in the .env is ignored, exactly as ReMe ignores it.
+  const stale = await probe("ollama", "https://stale.invalid");
+  assert.match(stale, /localhost:11434/);
+  assert.doesNotMatch(stale, /stale\.invalid/);
 
   // Ollama needs neither a base URL nor a key.
   const ollama = await probe("ollama");
@@ -348,4 +355,5 @@ test("a backend that ignores LLM_BASE_URL is probed with its own endpoint", asyn
   // The OpenAI-compatible providers do read LLM_BASE_URL, so it stays required.
   const openai = await probe("openai");
   assert.match(openai, /missing\.append\("LLM_BASE_URL"\)/);
+  assert.match(openai, /env\.get\("LLM_BASE_URL"/);
 });

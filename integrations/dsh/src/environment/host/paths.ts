@@ -1,13 +1,8 @@
 import { posix, win32, type PlatformPath } from "node:path";
 
-/** True when a path is written the Windows way: drive letter, UNC or backslash. */
-export function isWindowsPath(value: string): boolean {
-  return (
-    /^[A-Za-z]:[\\/]/.test(value) ||
-    value.startsWith("\\\\") ||
-    value.includes("\\")
-  );
-}
+import { isWindowsPath } from "../interpreter-key.js";
+
+export { isWindowsPath };
 
 /**
  * The path flavor a value is written in.

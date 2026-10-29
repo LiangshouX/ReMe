@@ -439,10 +439,11 @@ export function useService(
           // The record is already gone: there is nothing left to forget, so the
           // button must not offer an action that can never succeed.
           setForgetTarget(undefined);
-        } else if (result.record) {
-          // The record changed while the user decided: adopt the one the Host
-          // names, so a retry acts on the record that is actually there.
-          setForgetTarget(result.record);
+        } else if (result.code === "record-changed") {
+          // The record the user confirmed is not the one that is there now.
+          // The offer is dropped instead of being re-aimed at a record the
+          // user never saw: the next refusal names the current one.
+          setForgetTarget(undefined);
         }
       }
     } catch (error) {
@@ -604,6 +605,15 @@ export function ServiceSection({
   // The record can only be forgotten when the Host named one: it is the
   // record-only way out of a process the Host refuses to signal.
   const canForget = current && forgetTarget !== undefined;
+  // The confirmation names the record, so the user sees what they are about
+  // to delete and not only where it lives.
+  const forgetText = forgetTarget
+    ? `${fill(t("forgetConfirmRecord"), { endpoint: forgetTarget.endpoint })}${
+        forgetTarget.pid === undefined
+          ? ""
+          : ` ${fill(t("forgetConfirmPid"), { pid: forgetTarget.pid })}`
+      }`
+    : "";
 
   return (
     <section className="reme-env-card">
@@ -748,11 +758,7 @@ export function ServiceSection({
           {current && canForget ? (
             forgetConfirm ? (
               <div className="reme-env-confirm">
-                <p>
-                  {fill(t("forgetConfirmRecord"), {
-                    endpoint: forgetTarget?.endpoint ?? "",
-                  })}
-                </p>
+                <p>{forgetText}</p>
                 <button
                   type="button"
                   className="reme-settings-discard"

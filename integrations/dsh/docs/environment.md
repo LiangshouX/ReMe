@@ -107,8 +107,10 @@ DSH settings.
   protocol of the `LLM_BACKEND` in the `.env`: `openai`, `dashscope`, `deepseek`, `moonshot` and `xai` use the
   OpenAI-compatible `/chat/completions` (Bearer auth), `anthropic` uses `/v1/messages` (`x-api-key`), `gemini`
   uses `/v1beta/models/<model>:generateContent` (`x-goog-api-key`) and `ollama` uses `/api/chat` (a local server
-  needs no key). Gemini and Ollama are probed with their own endpoint when the `.env` names no base URL, because
-  ReMe's credentials for them do not read that variable.
+  needs no key). Gemini and Ollama are probed with their own endpoint, because ReMe's credentials for them do not
+  read `LLM_BASE_URL`; a stale value left in the `.env` cannot send the probe to a host the service never calls.
+  The base URL is used as the provider's own SDK builds it, so a base that already carries the version suffix
+  fails in the probe exactly as it fails in the service.
 - Drafts are bound to the workspace they were typed in: switching the workspace drops them, so a key typed for
   one workspace cannot be saved into another.
 

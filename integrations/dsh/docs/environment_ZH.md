@@ -86,8 +86,9 @@ ReMe 在服务启动时读取 workspace 目录下的 `.env`；标签页从不把
   （密钥）、`404`（模型名或 Base URL）与网络错误给出提示。请求按 `.env` 里的 `LLM_BACKEND` 选择协议：
   `openai`、`dashscope`、`deepseek`、`moonshot`、`xai` 走 OpenAI 兼容的 `/chat/completions`（Bearer 认证），
   `anthropic` 走 `/v1/messages`（`x-api-key`），`gemini` 走 `/v1beta/models/<model>:generateContent`
-  （`x-goog-api-key`），`ollama` 走 `/api/chat`（本地服务无需密钥）。Gemini 与 Ollama 在 `.env` 没有写 Base URL 时
-  使用各自的默认地址，因为 ReMe 为它们生成的凭据并不读取该变量。
+  （`x-goog-api-key`），`ollama` 走 `/api/chat`（本地服务无需密钥）。Gemini 与 Ollama 一律使用服务商自有地址探测，
+  因为 ReMe 为它们生成的凭据并不读取 `LLM_BASE_URL`；`.env` 里残留的旧值不会把探测引到服务根本不会访问的主机。
+  Base URL 的拼接方式与服务商 SDK 完全一致，因此已经带版本后缀的地址在探测与服务中都会同样失败。
 - 草稿与输入它的 workspace 绑定：切换 workspace 会丢弃草稿，因此为某个 workspace 输入的密钥不会被保存到另一个。
 
 ## 连接测试

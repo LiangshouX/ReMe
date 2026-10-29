@@ -198,19 +198,18 @@ export interface LlmProtocol {
   /** Whether the provider needs an API key at all. */
   keyRequired: boolean;
   /**
-   * Base URL to use when the `.env` names none.
+   * Where the base URL comes from.
    *
-   * ReMe's own credentials decide this: the OpenAI-compatible providers and
-   * Anthropic read `LLM_BASE_URL`, while Gemini and Ollama ignore it and use
-   * their own endpoint. Requiring the variable for those two would report a
-   * working configuration as broken.
+   * ReMe's credentials decide this. The OpenAI-compatible providers and
+   * Anthropic read `LLM_BASE_URL` from the workspace `.env`, so the probe
+   * reads it too. Gemini and Ollama ignore that variable and use their own
+   * endpoint, so the probe must use that one as well: a stale value left in
+   * the `.env` would otherwise send the probe to a host the service never
+   * uses, and report a working configuration as broken.
    */
-  base?: string;
-  /**
-   * Suffix the base URL may already carry. Anthropic-compatible proxies are
-   * often configured with a `/v1` base, which must not be doubled.
-   */
-  trimSuffix?: string;
+  baseSource: "env" | "provider";
+  /** The provider's own endpoint; used when `baseSource` is `provider`. */
+  providerBase?: string;
 }
 
 /**
@@ -230,6 +229,7 @@ const OPENAI_PROTOCOL: LlmProtocol = {
   headers: {},
   body: OPENAI_CHAT_BODY,
   keyRequired: true,
+  baseSource: "env",
 };
 
 /** One entry per backend the tab offers; the key is the `.env` value. */
@@ -246,7 +246,7 @@ export const LLM_PROTOCOLS: Record<string, LlmProtocol> = {
     headers: { "anthropic-version": "2023-06-01" },
     body: '{"model":{model},"max_tokens":1,"messages":[{"role":"user","content":"ping"}]}',
     keyRequired: true,
-    trimSuffix: "/v1",
+    baseSource: "env",
   },
   gemini: {
     path: "/v1beta/models/{model}:generateContent",
@@ -255,8 +255,8 @@ export const LLM_PROTOCOLS: Record<string, LlmProtocol> = {
     headers: {},
     body: '{"contents":[{"role":"user","parts":[{"text":"ping"}]}],"generationConfig":{"maxOutputTokens":1}}',
     keyRequired: true,
-    base: "https://generativelanguage.googleapis.com",
-    trimSuffix: "/v1beta",
+    baseSource: "provider",
+    providerBase: "https://generativelanguage.googleapis.com",
   },
   ollama: {
     path: "/api/chat",
@@ -265,7 +265,8 @@ export const LLM_PROTOCOLS: Record<string, LlmProtocol> = {
     headers: {},
     body: '{"model":{model},"messages":[{"role":"user","content":"ping"}],"stream":false}',
     keyRequired: false,
-    base: "http://localhost:11434",
+    baseSource: "provider",
+    providerBase: "http://localhost:11434",
   },
 };
 
@@ -294,16 +295,17 @@ export function llmProbeSnippet(protocol: LlmProtocol): string {
         protocol.authPrefix,
       )} + key\n`
     : "";
-  // A provider whose own credentials ignore LLM_BASE_URL still has an
-  // endpoint; the probe uses it instead of reporting the config as broken.
-  const fallback = protocol.base
-    ? `if not base:\n    base = ${JSON.stringify(protocol.base)}\n`
-    : "";
-  const trim = protocol.trimSuffix
-    ? `if base.endswith(${JSON.stringify(
-        protocol.trimSuffix,
-      )}):\n    base = base[: -len(${JSON.stringify(protocol.trimSuffix)})]\n`
-    : "";
+  // A provider whose own credentials ignore LLM_BASE_URL is probed with the
+  // provider's endpoint, exactly as the service would call it. Reading the
+  // variable anyway would send the probe to a host the service never uses.
+  const base =
+    protocol.baseSource === "provider"
+      ? `base = ${JSON.stringify(protocol.providerBase ?? "")}\n`
+      : 'base = env.get("LLM_BASE_URL", "").strip().rstrip("/")\n';
+  const missingBase =
+    protocol.baseSource === "provider"
+      ? ""
+      : 'if not base:\n    missing.append("LLM_BASE_URL")\n';
   return `import json, time, urllib.request, urllib.error, urllib.parse
 env = {}
 try:
@@ -316,20 +318,17 @@ try:
             env[key.strip()] = value.strip().strip('"').strip("'")
 except OSError:
     pass
-base = env.get("LLM_BASE_URL", "").strip().rstrip("/")
-${fallback}key = env.get("LLM_API_KEY", "").strip()
+${base}key = env.get("LLM_API_KEY", "").strip()
 model = env.get("LLM_MODEL_NAME", "").strip()
 missing = []
-if not base:
-    missing.append("LLM_BASE_URL")
-if not model:
+${missingBase}if not model:
     missing.append("LLM_MODEL_NAME")
 if ${protocol.keyRequired ? "True" : "False"} and not key:
     missing.append("LLM_API_KEY")
 if missing:
     print(json.dumps({"ok": False, "status": 0, "latencyMs": 0, "error": "LLM config incomplete (" + ", ".join(missing) + ")"}))
     raise SystemExit(0)
-${trim}url = base + ${JSON.stringify(
+url = base + ${JSON.stringify(
     protocol.path,
   )}.replace("{model}", urllib.parse.quote(model, safe=""))
 body = ${JSON.stringify(

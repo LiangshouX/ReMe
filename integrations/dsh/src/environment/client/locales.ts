@@ -133,7 +133,7 @@ export const envEn = {
   stopNotExited:
     "The service did not exit; its record was kept so you can retry.",
   stopRecordChanged:
-    "The recorded service changed since it was inspected; check it again and retry.",
+    "The recorded service changed since it was inspected, so the offer was withdrawn. Run the action again to see the current record.",
   stopConfirm:
     "Stop the ReMe service? Automatic memory in flight may need a retry.",
   foreignNote:
@@ -149,6 +149,7 @@ export const envEn = {
     "The plugin cannot clear this service record: Start and Stop both refuse to act on it. Forgetting it deletes only the record; the process keeps running.",
   forgetConfirmRecord:
     "Forget the service recorded for {endpoint}? This only deletes the plugin's record; it does not stop the process. Continue only if the process is already gone or you will manage it yourself.",
+  forgetConfirmPid: "The record describes process {pid}.",
   healthErrorHttp:
     "The endpoint returned an HTTP error, not a ReMe health report.",
   healthErrorNotReme:
@@ -320,7 +321,8 @@ export const envZh: typeof envEn = {
   stopForeign: "记录中的服务不属于当前服务地址。",
   stopUnknownIdentity: "无法验证记录中的进程身份，已保持其运行。",
   stopNotExited: "服务未退出；已保留记录，可稍后重试。",
-  stopRecordChanged: "记录的服务在检查之后发生了变化；请重新确认后再试。",
+  stopRecordChanged:
+    "记录的服务在检查之后发生了变化，因此已撤回该操作。请重新执行一次操作以查看当前记录。",
   stopConfirm: "停止 ReMe 服务？进行中的自动记忆可能需要重试。",
   foreignNote: "该服务由 DSH 之外的方式启动，这里只显示状态、不由本插件管理。",
   conflictNote: "端口被其他程序占用；请在『记忆设置』中修改服务地址的端口。",
@@ -332,6 +334,7 @@ export const envZh: typeof envEn = {
     "本插件无法清除这条服务记录：启动与停止都会拒绝操作它。忘记记录只删除记录，进程仍会继续运行。",
   forgetConfirmRecord:
     "忘记 {endpoint} 上记录的服务？此操作只删除本插件的记录，不会结束进程。请确认进程已结束或你将自行管理后再继续。",
+  forgetConfirmPid: "该记录描述的是进程 {pid}。",
   healthErrorHttp: "服务地址返回了 HTTP 错误，而不是 ReMe 健康报告。",
   healthErrorNotReme: "服务地址有响应，但返回的不是 ReMe 健康报告。",
   healthErrorReme: "服务在健康检查中报告了错误。",

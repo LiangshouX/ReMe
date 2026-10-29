@@ -3,8 +3,9 @@ import { closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 
 import type { InstallPhase, InstallRequest, InstallStatus } from "../types.js";
+import { interpreterKey } from "../interpreter-key.js";
 import { INSTALL_LOG_KEEP, openAppendLog, pruneInstallLogs } from "./log.js";
-import { isAbsolutePath, isWindowsPath } from "./paths.js";
+import { isAbsolutePath } from "./paths.js";
 
 export interface InstallChild {
   pid: number | undefined;
@@ -169,15 +170,11 @@ export function createInstallSpawner(
  * Whether two interpreter paths name the same interpreter.
  *
  * The path flavor decides the comparison: Windows paths fold case and
- * separators, POSIX paths do not, because they are case-sensitive there.
+ * separators, POSIX paths do not, because they are case-sensitive there. The
+ * tab compares the same way, so a job it found is never dropped again.
  */
 function sameInterpreter(left: string, right: string): boolean {
-  if (left === right) return true;
-  if (!isWindowsPath(left) || !isWindowsPath(right)) return false;
-  return (
-    left.replaceAll("\\", "/").toLowerCase() ===
-    right.replaceAll("\\", "/").toLowerCase()
-  );
+  return interpreterKey(left) === interpreterKey(right);
 }
 
 interface Job {

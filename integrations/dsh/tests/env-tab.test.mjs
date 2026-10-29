@@ -1508,6 +1508,35 @@ test("a running job is restored for the selected interpreter", async (t) => {
   assert.equal(lookups[0].input.pythonPath, SUGGESTED);
 });
 
+test("a restored job is matched by the interpreter's own path semantics", async (t) => {
+  // The Host reports the interpreter with its own spelling; a Windows path
+  // folds case and separators, so the job is still the one on screen.
+  const job = {
+    id: "install-8",
+    phase: "running",
+    pythonPath: SUGGESTED.replaceAll("\\", "/").toLowerCase(),
+    command: "pip install reme-ai[core]",
+    startedAt: new Date().toISOString(),
+    logPath: "C:\\Users\\test\\.reme\\install-8.log",
+    logTail: "",
+  };
+  const { renderer, restore } = await mount(
+    {},
+    {
+      responses: {
+        "remeEnv/installStatus": (input) =>
+          input?.jobId || input?.pythonPath ? job : null,
+      },
+    },
+  );
+  t.after(restore);
+
+  assert.ok(
+    texts(renderer.toJSON()).join(" ").includes(envZh.installing),
+    "the running job is shown again",
+  );
+});
+
 test("Forget targets the record the Host named, not the endpoint on screen", async (t) => {
   const CARD = "http://127.0.0.1:2444";
   const RECORD = "http://127.0.0.1:2333";
@@ -1566,10 +1595,14 @@ test("Forget targets the record the Host named, not the endpoint on screen", asy
   await act(async () => {
     buttonByText(renderer, envZh.forgetRecord).props.onClick();
   });
+  const confirming = texts(renderer.toJSON()).join(" ");
   assert.ok(
-    texts(renderer.toJSON()).join(" ").includes(RECORD),
+    confirming.includes(RECORD),
     "the confirmation names the blocked record",
   );
+  // It names the process the record describes, so the user sees what they are
+  // about to delete.
+  assert.ok(confirming.includes("6000"), "the confirmation names the pid");
   await act(async () => {
     buttonByText(renderer, envZh.forgetRecord).props.onClick();
   });
@@ -1587,4 +1620,75 @@ test("Forget targets the record the Host named, not the endpoint on screen", asy
     "the record's own endpoint is used, not the endpoint on screen",
   );
   assert.equal(forget.input.expectPid, 6000, "the record is pinned by its pid");
+});
+
+test("a record that changed is not forgotten on a second click", async (t) => {
+  const stopped = {
+    phase: "stopped",
+    managed: false,
+    endpoint: "http://127.0.0.1:2333",
+    logPath: "C:\\Users\\test\\.reme\\service.log",
+  };
+  const { renderer, calls, restore } = await mount(
+    {},
+    {
+      responses: {
+        "remeEnv/serviceStatus": stopped,
+        "remeEnv/serviceStart": {
+          started: false,
+          alreadyRunning: false,
+          error: "The recorded service identity could not be verified",
+          code: "unverified-record",
+          pid: 6000,
+          record: { endpoint: "http://127.0.0.1:2333", pid: 6000 },
+          command: "",
+          logPath: stopped.logPath,
+          startedAt: new Date().toISOString(),
+        },
+        // The record was replaced between the offer and the confirmation.
+        "remeEnv/serviceForget": {
+          forgotten: false,
+          reason: "The recorded service changed since it was inspected",
+          code: "record-changed",
+          pid: 7000,
+          record: { endpoint: "http://127.0.0.1:2333", pid: 7000 },
+        },
+      },
+    },
+  );
+  t.after(restore);
+
+  await act(async () => {
+    buttonByText(renderer, envZh.startService).props.onClick();
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+  await act(async () => {
+    buttonByText(renderer, envZh.forgetRecord).props.onClick();
+  });
+  await act(async () => {
+    buttonByText(renderer, envZh.forgetRecord).props.onClick();
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  const copy = texts(renderer.toJSON()).join(" ");
+  assert.ok(copy.includes(envZh.stopRecordChanged), "the refusal is explained");
+  // The offer is withdrawn: the record the user confirmed is not the one that
+  // is there now, so a second click must not be able to delete it.
+  assert.equal(
+    renderer.root.findAll(
+      (node) =>
+        node.type === "button" &&
+        textOf(node.props.children) === envZh.forgetRecord,
+    ).length,
+    0,
+  );
+  assert.equal(
+    calls.rpc.filter((call) => call.method === "remeEnv/serviceForget").length,
+    1,
+    "the withdrawn offer sends no second request",
+  );
 });

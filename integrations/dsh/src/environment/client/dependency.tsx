@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { StatusRpc } from "../../client/status-page.js";
 import { safeError } from "../../endpoint.js";
+import { interpreterKey } from "../interpreter-key.js";
 import type { InstallStatus, RemeCheck } from "../types.js";
 import { fill, type EnvTranslator } from "./locales.js";
 import { StatusBadge } from "./presentation.js";
@@ -175,7 +176,11 @@ export function useDependency(
         // An installation the user started meanwhile owns the card now.
         if (request !== generation.current) return;
         if (!status || status.phase !== "running") return;
-        if (status.pythonPath !== pythonPath) return;
+        // The Host looks the job up by interpreter, with the path semantics of
+        // the path's own platform; the tab compares the same way, so a job the
+        // Host found is not dropped again here.
+        if (interpreterKey(status.pythonPath) !== interpreterKey(pythonPath))
+          return;
         setInstall({
           phase: "running",
           pythonPath,
@@ -196,19 +201,16 @@ export function useDependency(
   // state restarts the poll instead of leaving the old one running.
   const installGeneration = install.generation;
   useEffect(() => {
-    if (install.phase !== "running") return;
+    // A running job always has an id; without one the Host would answer with
+    // the newest job overall, which may belong to another interpreter.
+    if (install.phase !== "running" || !jobId) return;
     const controller = new AbortController();
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async (): Promise<void> => {
       try {
         const status = parseInstallStatus(
-          await envCall(
-            rpc,
-            "installStatus",
-            { jobId: jobId ?? "" },
-            controller.signal,
-          ),
+          await envCall(rpc, "installStatus", { jobId }, controller.signal),
         );
         if (cancelled) return;
         if (!status) {
