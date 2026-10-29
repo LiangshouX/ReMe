@@ -50,6 +50,13 @@ async function editor(mutate) {
   );
   vm.runInNewContext(bundle, {
     URL,
+    // The card disposes its form model on a deferred timer, so the new
+    // context needs the timer globals: without them the cleanup throws
+    // `ReferenceError: setTimeout is not defined` and React reports it.
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
     document: {
       head: { appendChild() {} },
       createElement: () => ({ dataset: {}, remove() {} }),
@@ -144,8 +151,13 @@ async function editor(mutate) {
         .find((button) => button.children.includes(label));
     },
     text: () => JSON.stringify(renderer.toJSON()),
-    close() {
+    async close() {
       act(() => renderer.unmount());
+      // The card defers its disposal to the next tick, so the cleanup runs
+      // inside the test instead of after it.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
       for (const dispose of disposers) dispose?.();
     },
   };
@@ -171,7 +183,7 @@ test("saves all edited fields in one revision-fenced mutation", async () => {
     assert.match(ui.text(), /saved/);
     assert.equal(ui.button("save").props.disabled, true);
   } finally {
-    ui.close();
+    await ui.close();
   }
 });
 
@@ -194,7 +206,7 @@ for (const outcome of ["refused", "transport failure"]) {
       act(() => ui.button("discard").props.onClick());
       assert.doesNotMatch(ui.text(), /http:\/\/memory.test/);
     } finally {
-      ui.close();
+      await ui.close();
     }
   });
 }
@@ -212,7 +224,7 @@ test("resets overrides in one mutation only after Save", async () => {
     assert.ok(ui.calls[0].ops.every((op) => op.op === "unset"));
     assert.equal(ui.calls[0].revision, 7);
   } finally {
-    ui.close();
+    await ui.close();
   }
 });
 
@@ -228,7 +240,7 @@ test("read-only configuration cannot be saved", async () => {
     assert.equal(ui.button("save").props.disabled, true);
     assert.match(ui.text(), /readOnly/);
   } finally {
-    ui.close();
+    await ui.close();
   }
 });
 
@@ -253,7 +265,7 @@ for (const endpoint of [
         });
         assert.equal(ui.calls.length, 0);
       } finally {
-        ui.close();
+        await ui.close();
       }
     },
   );

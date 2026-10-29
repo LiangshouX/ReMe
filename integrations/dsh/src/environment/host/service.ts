@@ -16,6 +16,7 @@ import { serviceEndpointKey } from "../endpoint-key.js";
 import type {
   HealthErrorCode,
   ServiceForgetResult,
+  ServiceRecordRef,
   ServiceStartResult,
   ServiceState,
   ServiceStopResult,
@@ -202,6 +203,21 @@ export function removeServiceState(path: string): void {
   } catch {
     // A stale state file is retried by the next status read.
   }
+}
+
+/**
+ * Identity of a persisted record, for a result that names the record it could
+ * not act on. The recovery action targets this record, which is not
+ * necessarily the endpoint the request was made for.
+ */
+export function serviceRecordRef(
+  persisted: PersistedService | undefined,
+): ServiceRecordRef | undefined {
+  if (!persisted) return undefined;
+  return {
+    endpoint: persisted.endpoint,
+    ...(persisted.pid === undefined ? {} : { pid: persisted.pid }),
+  };
 }
 
 const clearServiceState = removeServiceState;
@@ -578,6 +594,7 @@ export async function stopService(
       reason:
         "The recorded process identity could not be verified; refusing to stop it",
       code: "unverified",
+      record: serviceRecordRef(persisted),
     };
   if (ownership !== "owned")
     return {
@@ -621,6 +638,7 @@ export async function stopService(
     pid,
     reason: "The service did not exit after the force-kill",
     code: "not-exited",
+    record: serviceRecordRef(persisted),
   };
 }
 
@@ -632,10 +650,17 @@ export async function stopService(
  * leaves the tab with no working action at all, so forgetting the record is the
  * explicit way out: the plugin stops managing the process and the user confirms
  * what to do with it themselves.
+ *
+ * `expectPid` pins the record the caller saw. Without it a record that was
+ * replaced in the meantime would be dropped silently; with it the request is
+ * refused instead, because the process it was meant to describe is a different
+ * one now.
  */
 export function forgetService(options: {
   statePath: string;
   endpoint: string;
+  /** Pid the caller saw; the record must still describe it. */
+  expectPid?: number;
 }): ServiceForgetResult {
   const persisted = readServiceState(options.statePath);
   if (!persisted || !isValidPid(persisted.pid)) {
@@ -654,6 +679,14 @@ export function forgetService(options: {
       forgotten: false,
       reason: "The recorded service does not belong to this endpoint",
       code: "foreign",
+    };
+  if (options.expectPid !== undefined && persisted.pid !== options.expectPid)
+    return {
+      forgotten: false,
+      pid: persisted.pid,
+      reason: "The recorded service changed since it was inspected",
+      code: "record-changed",
+      record: serviceRecordRef(persisted),
     };
   clearServiceState(options.statePath);
   return { forgotten: true, pid: persisted.pid };

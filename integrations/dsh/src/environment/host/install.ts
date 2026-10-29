@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import type { InstallPhase, InstallRequest, InstallStatus } from "../types.js";
 import { INSTALL_LOG_KEEP, openAppendLog, pruneInstallLogs } from "./log.js";
-import { isAbsolutePath } from "./paths.js";
+import { isAbsolutePath, isWindowsPath } from "./paths.js";
 
 export interface InstallChild {
   pid: number | undefined;
@@ -165,6 +165,21 @@ export function createInstallSpawner(
   };
 }
 
+/**
+ * Whether two interpreter paths name the same interpreter.
+ *
+ * The path flavor decides the comparison: Windows paths fold case and
+ * separators, POSIX paths do not, because they are case-sensitive there.
+ */
+function sameInterpreter(left: string, right: string): boolean {
+  if (left === right) return true;
+  if (!isWindowsPath(left) || !isWindowsPath(right)) return false;
+  return (
+    left.replaceAll("\\", "/").toLowerCase() ===
+    right.replaceAll("\\", "/").toLowerCase()
+  );
+}
+
 interface Job {
   id: string;
   phase: InstallPhase;
@@ -204,7 +219,8 @@ export class InstallJobs {
         "Install requires an absolute Python interpreter path",
       );
     const running = [...this.jobs.values()].find(
-      (job) => job.phase === "running" && job.pythonPath === pythonPath,
+      (job) =>
+        job.phase === "running" && sameInterpreter(job.pythonPath, pythonPath),
     );
     if (running) return this.snapshot(running);
     const args = pipArgs(request);
@@ -243,10 +259,41 @@ export class InstallJobs {
     return this.snapshot(job);
   }
 
-  /** Status of one job, defaulting to the most recent; null when unknown. */
-  status(jobId?: string): InstallStatus | null {
+  /**
+   * Status of one job, of the newest running job for an interpreter, or of the
+   * newest job overall.
+   *
+   * The interpreter lookup is what lets a tab restore the job it lost: two
+   * interpreters may install at the same time, so the newest job overall is
+   * not necessarily the one on screen.
+   */
+  status(jobId?: string, pythonPath?: string): InstallStatus | null {
+    const trimmed = (jobId ?? "").trim();
+    if (trimmed) {
+      const job = this.jobs.get(trimmed);
+      return job ? this.snapshot(job) : null;
+    }
+    const wanted = (pythonPath ?? "").trim();
+    if (wanted) {
+      // Only a running job is restored: a finished one belongs to the tab that
+      // started it, which shows its own result for it.
+      const job = this.runningFor(wanted);
+      return job ? this.snapshot(job) : null;
+    }
     const job = this.jobs.get(this.key(jobId));
     return job ? this.snapshot(job) : null;
+  }
+
+  /** The newest running job for one interpreter, if there is one. */
+  private runningFor(pythonPath: string): Job | undefined {
+    let found: Job | undefined;
+    // The map keeps insertion order, so the last match is the newest job.
+    for (const job of this.jobs.values()) {
+      if (job.phase !== "running") continue;
+      if (!sameInterpreter(job.pythonPath, pythonPath)) continue;
+      found = job;
+    }
+    return found;
   }
 
   /**

@@ -190,6 +190,12 @@ test("an unprovable previous record blocks the start instead of orphaning it", a
   assert.equal(result.started, false);
   assert.equal(result.code, "unverified-record");
   assert.equal(result.pid, 6000, "the client needs the pid in the message");
+  // The record is named, so the client can offer to forget exactly this one
+  // instead of the endpoint it happens to be showing.
+  assert.deepEqual(result.record, {
+    endpoint: "http://127.0.0.1:2334",
+    pid: 6000,
+  });
   assert.deepEqual(calls.killTree, []);
   assert.equal(calls.spawn.length, 0);
   // Once the evidence is readable again, the same record can be stopped.
@@ -258,6 +264,73 @@ test("forgetting a record removes it without signalling the process", async (t) 
   const again = await manager.serviceForget("http://127.0.0.1:2334");
   assert.equal(again.forgotten, false);
   assert.equal(again.code, "no-record");
+});
+
+test("refuses to forget a record that changed since it was inspected", async (t) => {
+  const { manager, directory } = managerIn(t);
+  const statePath = join(directory, "reme-memory", "service.json");
+  writeServiceState(statePath, {
+    pid: 6000,
+    endpoint: "http://127.0.0.1:2334",
+    workspaceDir: directory,
+    pythonPath: "D:\\env\\python.exe",
+    command: "reme start",
+    startedAt: "2026-10-27T00:00:00.000Z",
+  });
+
+  // The user was shown pid 6000, but the record now describes another pid.
+  const changed = await manager.serviceForget("http://127.0.0.1:2334", 7000);
+  assert.equal(changed.forgotten, false);
+  assert.equal(changed.code, "record-changed");
+  assert.equal(readServiceState(statePath)?.pid, 6000, "the record survives");
+
+  // The record the Host names is the one a retry may act on.
+  const current = await manager.serviceForget("http://127.0.0.1:2334", 6000);
+  assert.equal(current.forgotten, true);
+  assert.equal(readServiceState(statePath), undefined);
+});
+
+test("a blocked start names the record, and forgetting targets that record", async (t) => {
+  // The reported case: a live but unverifiable record for port 2333 while the
+  // configured endpoint is 2444. The start is blocked by the 2333 record, so
+  // the recovery has to act on that record, not on the endpoint on screen.
+  const { manager, directory, io } = managerIn(t);
+  const statePath = join(directory, "reme-memory", "service.json");
+  writeServiceState(statePath, {
+    pid: 6000,
+    endpoint: "http://127.0.0.1:2333",
+    workspaceDir: directory,
+    pythonPath: "D:\\env\\python.exe",
+    command: "reme start",
+    startedAt: "2026-10-27T00:00:00.000Z",
+  });
+  // The process exists, but its command line cannot be read, so ownership is
+  // unproven and the record must survive.
+  io.processCommandLine = async () => "";
+
+  const started = await manager.serviceStart(
+    "http://127.0.0.1:2444",
+    "D:\\env\\python.exe",
+    join(directory, "workspace"),
+  );
+  assert.equal(started.started, false);
+  assert.equal(started.code, "unverified-record");
+  assert.deepEqual(started.record, {
+    endpoint: "http://127.0.0.1:2333",
+    pid: 6000,
+  });
+
+  // Forgetting the endpoint on screen is refused as foreign: the record
+  // belongs to another port.
+  const foreign = await manager.serviceForget("http://127.0.0.1:2444");
+  assert.equal(foreign.forgotten, false);
+  assert.equal(foreign.code, "foreign");
+
+  // The record's own endpoint, pinned by the pid the Host reported, is what
+  // the confirmed recovery targets.
+  const forgotten = await manager.serviceForget("http://127.0.0.1:2333", 6000);
+  assert.equal(forgotten.forgotten, true);
+  assert.equal(readServiceState(statePath), undefined);
 });
 
 test("refuses to overwrite a live record owned by another endpoint", async (t) => {

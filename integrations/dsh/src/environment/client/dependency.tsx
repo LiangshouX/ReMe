@@ -16,11 +16,25 @@ export interface CheckState {
 
 export interface InstallState {
   phase: "idle" | "running" | "done";
+  /** Interpreter this state belongs to; another one cannot replace it. */
+  pythonPath: string;
   /** Job this section polls; another installation cannot replace it. */
   jobId?: string;
   job?: InstallStatus;
   error?: string;
+  /**
+   * Request generation. An answer from an older request never paints this
+   * card, so a late response cannot resurrect a job the user moved on from.
+   */
+  generation: number;
 }
+
+/** The state of an interpreter that has nothing installed or running. */
+const IDLE_INSTALL: InstallState = {
+  phase: "idle",
+  pythonPath: "",
+  generation: 0,
+};
 
 export interface DependencyState {
   /** Check result, only when it belongs to the interpreter on screen. */
@@ -42,7 +56,8 @@ export interface DependencyState {
 
 /**
  * The dependency section's asynchronous state: one reme-ai check per
- * interpreter, and one installation job bound to its own id.
+ * interpreter, and one installation job bound to its own interpreter, job id
+ * and request generation.
  */
 export function useDependency(
   rpc: StatusRpc,
@@ -58,11 +73,24 @@ export function useDependency(
     phase: "idle",
     forPath: "",
   });
-  const [install, setInstall] = useState<InstallState>({ phase: "idle" });
+  const [install, setInstall] = useState<InstallState>(IDLE_INSTALL);
   const [tick, setTick] = useState(0);
   const [now, setNow] = useState(0);
   const installed = useRef(onInstalled);
   installed.current = onInstalled;
+  /** Monotonic request counter: only the newest answer may paint the card. */
+  const generation = useRef(0);
+  /** Interpreter the state on screen belongs to. */
+  const currentPath = useRef(pythonPath);
+  /**
+   * The installation on screen belongs to the interpreter on screen: a job for
+   * another interpreter is neither shown nor cancellable from here. The card
+   * and the actions read this one state, so they cannot disagree.
+   */
+  const visibleInstall =
+    install.pythonPath === pythonPath
+      ? install
+      : { ...IDLE_INSTALL, pythonPath };
 
   useEffect(() => {
     if (!enabled || !pythonPath) return;
@@ -94,29 +122,67 @@ export function useDependency(
     return () => controller.abort();
   }, [rpc, pythonPath, tick, enabled]);
 
+  const recheck = useCallback(() => {
+    setCheck({ phase: "idle", forPath: "" });
+    setTick((current) => current + 1);
+  }, []);
+
+  /**
+   * The job finished. A successful install changed what the interpreter has,
+   * so the dependency check has to run again — otherwise the card keeps
+   * reporting "not installed" and Start stays disabled.
+   */
+  const finishInstall = useCallback(
+    (status: InstallStatus, path: string) => {
+      if (status.phase !== "succeeded") return;
+      // The success belongs to the interpreter on screen; anything else is a
+      // job the user already moved on from.
+      if (currentPath.current !== path) return;
+      installed.current();
+      recheck();
+    },
+    [recheck],
+  );
+
   // Progress belongs to an interpreter: switching interpreters must not keep
-  // showing (or cancelling) a job that was started for the previous one.
-  const installFor = useRef(pythonPath);
+  // showing (or cancelling) a job that was started for the previous one. The
+  // new generation retires every answer the previous interpreter is owed.
   useEffect(() => {
-    if (installFor.current === pythonPath) return;
-    installFor.current = pythonPath;
-    setInstall({ phase: "idle" });
+    currentPath.current = pythonPath;
+    const request = (generation.current += 1);
+    setInstall({ phase: "idle", pythonPath, generation: request });
   }, [pythonPath]);
 
   // Restoring a running job is per interpreter: a job started for another
-  // interpreter belongs to that interpreter's section, not this one.
+  // interpreter belongs to that interpreter's section, not this one. The Host
+  // looks the job up by interpreter, because two interpreters may install at
+  // the same time and the newest job overall is not necessarily this one.
   useEffect(() => {
     if (!enabled || !pythonPath) return;
     const controller = new AbortController();
+    const request = generation.current;
     void (async () => {
       try {
         const status = parseInstallStatus(
-          await envCall(rpc, "installStatus", {}, controller.signal),
+          await envCall(
+            rpc,
+            "installStatus",
+            { pythonPath },
+            controller.signal,
+          ),
         );
         if (controller.signal.aborted) return;
-        if (status?.phase !== "running" || status.pythonPath !== pythonPath)
-          return;
-        setInstall({ phase: "running", jobId: status.id, job: status });
+        // An installation the user started meanwhile owns the card now.
+        if (request !== generation.current) return;
+        if (!status || status.phase !== "running") return;
+        if (status.pythonPath !== pythonPath) return;
+        setInstall({
+          phase: "running",
+          pythonPath,
+          jobId: status.id,
+          job: status,
+          generation: request,
+        });
       } catch {
         // Restoring is best-effort; a later action reports real failures.
       }
@@ -125,6 +191,10 @@ export function useDependency(
   }, [rpc, pythonPath, enabled]);
 
   const jobId = install.jobId;
+  const installPath = install.pythonPath;
+  // The generation is not read in the effect: it is listed so that a replaced
+  // state restarts the poll instead of leaving the old one running.
+  const installGeneration = install.generation;
   useEffect(() => {
     if (install.phase !== "running") return;
     const controller = new AbortController();
@@ -142,7 +212,7 @@ export function useDependency(
         );
         if (cancelled) return;
         if (!status) {
-          setInstall({ phase: "idle" });
+          setInstall((current) => ({ ...current, phase: "idle" }));
           return;
         }
         if (status.phase === "running") {
@@ -151,7 +221,7 @@ export function useDependency(
           return;
         }
         setInstall((current) => ({ ...current, phase: "done", job: status }));
-        if (status.phase === "succeeded") installed.current();
+        finishInstall(status, installPath);
       } catch (error) {
         if (cancelled) return;
         setInstall((current) => ({
@@ -167,7 +237,14 @@ export function useDependency(
       controller.abort();
       if (timer) clearTimeout(timer);
     };
-  }, [install.phase, jobId, rpc]);
+  }, [
+    install.phase,
+    jobId,
+    installPath,
+    installGeneration,
+    rpc,
+    finishInstall,
+  ]);
 
   useEffect(() => {
     if (install.phase !== "running") return;
@@ -175,36 +252,56 @@ export function useDependency(
     return () => clearInterval(timer);
   }, [install.phase]);
 
-  const recheck = useCallback(() => {
-    setCheck({ phase: "idle", forPath: "" });
-    setTick((current) => current + 1);
-  }, []);
-
   const start = useCallback(
     async (upgrade: boolean, indexUrl?: string, forceReinstall?: boolean) => {
-      if (!pythonPath || install.phase === "running") return;
-      setInstall({ phase: "idle" });
+      // The card shows the derived state, so the guard reads it too: a job for
+      // another interpreter must not block this one.
+      if (!pythonPath || visibleInstall.phase === "running") return;
+      const target = pythonPath;
+      // Every request gets its own generation, so a late answer cannot
+      // replace a newer installation or survive an interpreter switch.
+      const request = (generation.current += 1);
+      setInstall({ phase: "idle", pythonPath: target, generation: request });
       try {
         const status = parseInstallStatus(
           await envCall(rpc, "install", {
-            pythonPath,
+            pythonPath: target,
             upgrade,
             ...(indexUrl ? { indexUrl } : {}),
             ...(forceReinstall ? { forceReinstall } : {}),
           }),
         );
-        setInstall(
-          status && status.phase === "running"
-            ? { phase: "running", jobId: status.id, job: status }
-            : status
-            ? { phase: "done", jobId: status.id, job: status }
-            : { phase: "idle" },
-        );
+        // The answer belongs to the request that asked for it.
+        if (request !== generation.current || target !== currentPath.current)
+          return;
+        if (!status) {
+          setInstall({
+            phase: "idle",
+            pythonPath: target,
+            generation: request,
+          });
+          return;
+        }
+        setInstall({
+          phase: status.phase === "running" ? "running" : "done",
+          pythonPath: target,
+          jobId: status.id,
+          job: status,
+          generation: request,
+        });
+        if (status.phase !== "running") finishInstall(status, target);
       } catch (error) {
-        setInstall({ phase: "done", error: safeError(error) });
+        if (request !== generation.current || target !== currentPath.current)
+          return;
+        setInstall({
+          phase: "done",
+          pythonPath: target,
+          generation: request,
+          error: safeError(error),
+        });
       }
     },
-    [install.phase, pythonPath, rpc],
+    [finishInstall, pythonPath, rpc, visibleInstall.phase],
   );
 
   const cancel = useCallback(async () => {
@@ -216,14 +313,22 @@ export function useDependency(
     }
   }, [jobId, rpc]);
 
-  const dismiss = useCallback(() => setInstall({ phase: "idle" }), []);
+  const dismiss = useCallback(() => {
+    const request = (generation.current += 1);
+    setInstall({
+      phase: "idle",
+      pythonPath: currentPath.current,
+      generation: request,
+    });
+  }, []);
 
   const current = check.forPath === pythonPath ? check : undefined;
   return {
     checkData: current?.data,
     checkError: current?.error,
     checking: Boolean(pythonPath) && check.forPath !== pythonPath,
-    install,
+    // The installation on screen belongs to the interpreter on screen.
+    install: visibleInstall,
     now,
     recheck,
     start,

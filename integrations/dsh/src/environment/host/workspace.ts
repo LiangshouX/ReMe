@@ -177,11 +177,134 @@ export function writeEnvText(path: string, text: string): void {
 }
 
 /**
- * Probe the configured LLM endpoint from inside the workspace directory, so
- * the snippet reads the same .env the service would discover.
+ * How one provider expects to be called.
+ *
+ * The tab offers native Anthropic, Gemini and Ollama backends next to the
+ * OpenAI-compatible ones, so the probe has to speak each provider's own
+ * protocol: an OpenAI-style request would report a working provider-native
+ * configuration as broken.
  */
-const LLM_TEST_SNIPPET = `
-import json, time, urllib.request, urllib.error
+export interface LlmProtocol {
+  /** Path appended to the base URL; `{model}` is the model name. */
+  path: string;
+  /** Header that carries the API key; empty when the provider needs none. */
+  authHeader: string;
+  /** Value prefix for the key header, e.g. `Bearer `. */
+  authPrefix: string;
+  /** Headers every request carries. */
+  headers: Record<string, string>;
+  /** JSON body template; `{model}` is the model name. */
+  body: string;
+  /** Whether the provider needs an API key at all. */
+  keyRequired: boolean;
+  /**
+   * Base URL to use when the `.env` names none.
+   *
+   * ReMe's own credentials decide this: the OpenAI-compatible providers and
+   * Anthropic read `LLM_BASE_URL`, while Gemini and Ollama ignore it and use
+   * their own endpoint. Requiring the variable for those two would report a
+   * working configuration as broken.
+   */
+  base?: string;
+  /**
+   * Suffix the base URL may already carry. Anthropic-compatible proxies are
+   * often configured with a `/v1` base, which must not be doubled.
+   */
+  trimSuffix?: string;
+}
+
+/**
+ * The OpenAI-compatible chat request, shared by the compatible providers.
+ *
+ * `{model}` is replaced with the JSON-quoted model name, so the placeholder
+ * carries no quotes of its own.
+ */
+const OPENAI_CHAT_BODY =
+  '{"model":{model},"messages":[{"role":"user","content":"ping"}],"max_tokens":1}';
+
+/** The protocol ReMe itself falls back to when `.env` names no backend. */
+const OPENAI_PROTOCOL: LlmProtocol = {
+  path: "/chat/completions",
+  authHeader: "Authorization",
+  authPrefix: "Bearer ",
+  headers: {},
+  body: OPENAI_CHAT_BODY,
+  keyRequired: true,
+};
+
+/** One entry per backend the tab offers; the key is the `.env` value. */
+export const LLM_PROTOCOLS: Record<string, LlmProtocol> = {
+  openai: OPENAI_PROTOCOL,
+  dashscope: OPENAI_PROTOCOL,
+  deepseek: OPENAI_PROTOCOL,
+  moonshot: OPENAI_PROTOCOL,
+  xai: OPENAI_PROTOCOL,
+  anthropic: {
+    path: "/v1/messages",
+    authHeader: "x-api-key",
+    authPrefix: "",
+    headers: { "anthropic-version": "2023-06-01" },
+    body: '{"model":{model},"max_tokens":1,"messages":[{"role":"user","content":"ping"}]}',
+    keyRequired: true,
+    trimSuffix: "/v1",
+  },
+  gemini: {
+    path: "/v1beta/models/{model}:generateContent",
+    authHeader: "x-goog-api-key",
+    authPrefix: "",
+    headers: {},
+    body: '{"contents":[{"role":"user","parts":[{"text":"ping"}]}],"generationConfig":{"maxOutputTokens":1}}',
+    keyRequired: true,
+    base: "https://generativelanguage.googleapis.com",
+    trimSuffix: "/v1beta",
+  },
+  ollama: {
+    path: "/api/chat",
+    authHeader: "",
+    authPrefix: "",
+    headers: {},
+    body: '{"model":{model},"messages":[{"role":"user","content":"ping"}],"stream":false}',
+    keyRequired: false,
+    base: "http://localhost:11434",
+  },
+};
+
+/** The backend ReMe itself falls back to when `.env` names none. */
+export const DEFAULT_LLM_BACKEND = "openai";
+
+/** The protocol a backend speaks; unknown backends use ReMe's default. */
+export function llmProtocolFor(backend: string): LlmProtocol {
+  const name = (backend ?? "").trim().toLowerCase();
+  return LLM_PROTOCOLS[name] ?? OPENAI_PROTOCOL;
+}
+
+/**
+ * The probe program for one provider, run by the selected interpreter inside
+ * the workspace so it reads the same `.env` the service would discover. The
+ * provider's protocol is baked into the program, so the probe cannot fall back
+ * to an OpenAI-style request for a provider that does not speak it.
+ */
+export function llmProbeSnippet(protocol: LlmProtocol): string {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...protocol.headers,
+  };
+  const auth = protocol.authHeader
+    ? `headers[${JSON.stringify(protocol.authHeader)}] = ${JSON.stringify(
+        protocol.authPrefix,
+      )} + key\n`
+    : "";
+  // A provider whose own credentials ignore LLM_BASE_URL still has an
+  // endpoint; the probe uses it instead of reporting the config as broken.
+  const fallback = protocol.base
+    ? `if not base:\n    base = ${JSON.stringify(protocol.base)}\n`
+    : "";
+  const trim = protocol.trimSuffix
+    ? `if base.endswith(${JSON.stringify(
+        protocol.trimSuffix,
+      )}):\n    base = base[: -len(${JSON.stringify(protocol.trimSuffix)})]\n`
+    : "";
+  return `import json, time, urllib.request, urllib.error, urllib.parse
 env = {}
 try:
     with open(".env", encoding="utf-8") as stream:
@@ -193,14 +316,27 @@ try:
             env[key.strip()] = value.strip().strip('"').strip("'")
 except OSError:
     pass
-base = env.get("LLM_BASE_URL", "").rstrip("/")
-key = env.get("LLM_API_KEY", "")
-model = env.get("LLM_MODEL_NAME", "")
-if not base or not key or not model:
-    print(json.dumps({"ok": False, "status": 0, "latencyMs": 0, "error": "LLM config incomplete (LLM_BASE_URL / LLM_API_KEY / LLM_MODEL_NAME)"}))
+base = env.get("LLM_BASE_URL", "").strip().rstrip("/")
+${fallback}key = env.get("LLM_API_KEY", "").strip()
+model = env.get("LLM_MODEL_NAME", "").strip()
+missing = []
+if not base:
+    missing.append("LLM_BASE_URL")
+if not model:
+    missing.append("LLM_MODEL_NAME")
+if ${protocol.keyRequired ? "True" : "False"} and not key:
+    missing.append("LLM_API_KEY")
+if missing:
+    print(json.dumps({"ok": False, "status": 0, "latencyMs": 0, "error": "LLM config incomplete (" + ", ".join(missing) + ")"}))
     raise SystemExit(0)
-body = json.dumps({"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}).encode()
-request = urllib.request.Request(base + "/chat/completions", data=body, headers={"Content-Type": "application/json", "Authorization": "Bearer " + key}, method="POST")
+${trim}url = base + ${JSON.stringify(
+    protocol.path,
+  )}.replace("{model}", urllib.parse.quote(model, safe=""))
+body = ${JSON.stringify(
+    protocol.body,
+  )}.replace("{model}", json.dumps(model)).encode()
+headers = ${JSON.stringify(headers)}
+${auth}request = urllib.request.Request(url, data=body, headers=headers, method="POST")
 started = time.time()
 try:
     with urllib.request.urlopen(request, timeout=20) as response:
@@ -211,6 +347,21 @@ except urllib.error.HTTPError as error:
 except Exception as error:
     print(json.dumps({"ok": False, "status": 0, "latencyMs": int((time.time() - started) * 1000), "error": str(error)[:300]}))
 `;
+}
+
+/**
+ * The LLM backend the workspace `.env` selects. An unreadable or incomplete
+ * file names none, which leaves the probe on ReMe's default backend.
+ */
+export function readLlmBackend(envPath: string): string {
+  let text = "";
+  try {
+    text = readFileSync(envPath, "utf8");
+  } catch {
+    return "";
+  }
+  return (parseEnvFile(text)["LLM_BACKEND"] ?? "").trim();
+}
 
 /** Parse the JSON line the LLM test snippet prints. */
 export function parseLlmTest(text: string): LlmTestResult {
@@ -242,11 +393,21 @@ export async function testLlm(
   io: { run: RunCommand },
   options: { workspaceDir: string; pythonPath: string },
 ): Promise<LlmTestResult> {
+  // The backend in the workspace `.env` decides the protocol; the probe must
+  // not fall back to an OpenAI-style request for a provider that speaks its
+  // own, or it would report a working configuration as broken.
+  const protocol = llmProtocolFor(
+    readLlmBackend(join(options.workspaceDir, ".env")),
+  );
   try {
-    const result = await io.run(options.pythonPath, ["-c", LLM_TEST_SNIPPET], {
-      cwd: options.workspaceDir,
-      timeoutMs: 30_000,
-    });
+    const result = await io.run(
+      options.pythonPath,
+      ["-c", llmProbeSnippet(protocol)],
+      {
+        cwd: options.workspaceDir,
+        timeoutMs: 30_000,
+      },
+    );
     if (result.error)
       return {
         ok: false,

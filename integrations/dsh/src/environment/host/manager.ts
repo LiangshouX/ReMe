@@ -15,6 +15,7 @@ import {
   removeServiceState,
   serviceEndpointKey,
   serviceOwnership,
+  serviceRecordRef,
   serviceStatus,
   startService,
   stopService,
@@ -39,6 +40,8 @@ import type {
   RemeCheck,
   ServiceForgetResult,
   ServiceLog,
+  ServiceRecordRef,
+  ServiceStartErrorCode,
   ServiceStartResult,
   ServiceState,
   ServiceStopResult,
@@ -120,8 +123,14 @@ export class ReMeEnvManager {
     return this.installs.start(request);
   }
 
-  installStatus(jobId?: string): InstallStatus | null {
-    return this.installs.status(jobId);
+  /**
+   * Status of one job, of the newest running job for an interpreter, or of the
+   * newest job overall. The interpreter lookup is what lets a tab restore the
+   * job it lost: two interpreters may install at the same time, so "the latest
+   * job" is not necessarily the one on screen.
+   */
+  installStatus(jobId?: string, pythonPath?: string): InstallStatus | null {
+    return this.installs.status(jobId, pythonPath);
   }
 
   installCancel(jobId?: string): boolean {
@@ -231,14 +240,9 @@ export class ReMeEnvManager {
     workspaceDir: string,
     authToken = "",
   ): Promise<ServiceStartResult> {
-    const run = this.startQueue.then(() =>
+    return this.enqueue(() =>
       this.startLocked(endpoint, pythonPath, workspaceDir, authToken),
     );
-    this.startQueue = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
   }
 
   /**
@@ -249,36 +253,33 @@ export class ReMeEnvManager {
    */
   serviceStop(endpoint: string): Promise<ServiceStopResult> {
     const endpointValue = this.endpoint(endpoint);
-    const run = this.startQueue.then(() => this.stopLocked(endpointValue));
-    this.startQueue = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
+    return this.enqueue(() => this.stopLocked(endpointValue));
   }
 
   /**
-   * Drop this endpoint's service record without touching the process. It is
-   * the escape hatch for a live process whose identity cannot be verified
-   * (Stop and Start both refuse to act on it). Joins the start queue so a
-   * launch that is still being recorded completes first.
+   * Drop a service record without touching the process. It is the escape hatch
+   * for a live process whose identity cannot be verified (Stop and Start both
+   * refuse to act on it). Joins the start queue so a launch that is still being
+   * recorded completes first.
+   *
+   * `expectPid` pins the record the caller saw: a record that was replaced in
+   * the meantime is refused instead of being dropped silently.
    */
-  serviceForget(endpoint: string): Promise<ServiceForgetResult> {
+  serviceForget(
+    endpoint: string,
+    expectPid?: number,
+  ): Promise<ServiceForgetResult> {
     const endpointValue = this.endpoint(endpoint);
-    const run = this.startQueue.then(() => {
+    return this.enqueue(async () => {
       const result = forgetService({
         statePath: this.serviceStatePath,
         endpoint: endpointValue,
+        ...(expectPid === undefined ? {} : { expectPid }),
       });
       if (result.forgotten && this.starting?.endpoint === endpointValue)
         this.starting = undefined;
       return result;
     });
-    this.startQueue = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
   }
 
   /** Tail of the workspace service log. */
@@ -321,6 +322,44 @@ export class ReMeEnvManager {
       options.workspaceDir,
       options.authToken ?? "",
     );
+  }
+
+  /**
+   * Serialize service operations: a start, a stop and a forget must not
+   * interleave, or two of them could act on the same record at once. A failed
+   * task must not wedge the queue, so it is swallowed here.
+   */
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.startQueue.then(task);
+    this.startQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /**
+   * A refused start. Every reason produces the same shape, so the client reads
+   * one result contract instead of guessing from the message.
+   */
+  private refused(
+    logPath: string,
+    startedAt: string,
+    code: ServiceStartErrorCode,
+    error: string,
+    extra?: { pid?: number; record?: ServiceRecordRef },
+  ): ServiceStartResult {
+    return {
+      started: false,
+      alreadyRunning: false,
+      command: "",
+      logPath,
+      startedAt,
+      error,
+      code,
+      ...(extra?.pid === undefined ? {} : { pid: extra.pid }),
+      ...(extra?.record === undefined ? {} : { record: extra.record }),
+    };
   }
 
   private endpoint(raw: string): string {
@@ -379,15 +418,12 @@ export class ReMeEnvManager {
       // The service record is per install, not per endpoint; spawning a second
       // endpoint's service now would overwrite the first one's record and
       // orphan it.
-      return {
-        started: false,
-        alreadyRunning: false,
-        command: "",
+      return this.refused(
         logPath,
-        startedAt: now,
-        error: `A service start for ${starting.endpoint} is still in progress`,
-        code: "other-endpoint-starting",
-      };
+        now,
+        "other-endpoint-starting",
+        `A service start for ${starting.endpoint} is still in progress`,
+      );
     }
     this.starting = undefined;
     const current = await this.serviceStatus(endpointValue, authToken);
@@ -405,32 +441,27 @@ export class ReMeEnvManager {
       // provable launch of ours (still booting or rejecting our token) is
       // stopped and replaced; anything else is left alone.
       if (!current.managed)
-        return {
-          started: false,
-          alreadyRunning: false,
-          command: "",
+        return this.refused(
           logPath,
-          startedAt: now,
-          error: "Another process is already listening on this endpoint",
-          code: "conflict",
-        };
+          now,
+          "conflict",
+          "Another process is already listening on this endpoint",
+        );
       const previous = await stopService(this.serviceIO, {
         statePath: this.serviceStatePath,
         endpoint: endpointValue,
         ownership: "owned",
       });
       if (!previous.stopped)
-        return {
-          started: false,
-          alreadyRunning: false,
-          command: "",
+        return this.refused(
           logPath,
-          startedAt: now,
-          error: `A previous launch could not be stopped: ${
+          now,
+          "previous-not-stopped",
+          `A previous launch could not be stopped: ${
             previous.reason ?? "unknown reason"
           }`,
-          code: "previous-not-stopped",
-        };
+          { record: previous.record },
+        );
     }
     // A record for a *different* endpoint that is still alive would be
     // overwritten by the new launch, leaving that endpoint unable to stop it.
@@ -451,29 +482,24 @@ export class ReMeEnvManager {
         recorded.endpoint,
       );
       if (other === "owned")
-        return {
-          started: false,
-          alreadyRunning: false,
-          command: "",
+        return this.refused(
           logPath,
-          startedAt: now,
-          error: `A service for ${recorded.endpoint} is still running; stop it from that endpoint first`,
-          code: "other-endpoint-running",
-        };
+          now,
+          "other-endpoint-running",
+          `A service for ${recorded.endpoint} is still running; stop it from that endpoint first`,
+        );
       // An unreadable image/command line is not proof the process is gone:
       // dropping the record would orphan a live service this plugin can no
-      // longer stop. Keep it and report why the start is blocked.
+      // longer stop. Keep it and report why the start is blocked. The record is
+      // named, so the client can offer to forget exactly this one.
       if (other === "unknown")
-        return {
-          started: false,
-          alreadyRunning: false,
-          command: "",
+        return this.refused(
           logPath,
-          startedAt: now,
-          pid: recorded.pid,
-          error: `The recorded service for ${recorded.endpoint} (pid ${recorded.pid}) could not be verified; leaving it untouched`,
-          code: "unverified-record",
-        };
+          now,
+          "unverified-record",
+          `The recorded service for ${recorded.endpoint} (pid ${recorded.pid}) could not be verified; leaving it untouched`,
+          { pid: recorded.pid, record: serviceRecordRef(recorded) },
+        );
       removeServiceState(this.serviceStatePath);
     }
     // A previous launch that never became healthy may still be alive. Stop it
@@ -492,68 +518,57 @@ export class ReMeEnvManager {
           ownership,
         });
         if (!previous.stopped)
-          return {
-            started: false,
-            alreadyRunning: false,
-            command: "",
+          return this.refused(
             logPath,
-            startedAt: now,
-            error: `A previous launch could not be stopped: ${
+            now,
+            "previous-not-stopped",
+            `A previous launch could not be stopped: ${
               previous.reason ?? "unknown reason"
             }`,
-            code: "previous-not-stopped",
-          };
+            { record: previous.record },
+          );
       } else if (ownership === "unknown") {
         // PowerShell/ps failed to describe a live process. Discarding the
         // record here would orphan it: the tab could never stop or replace it.
-        return {
-          started: false,
-          alreadyRunning: false,
-          command: "",
+        // The message and the record name the same pid: it is the one the
+        // confirmed Forget is pinned to.
+        const pid = recorded?.pid ?? current.pid;
+        return this.refused(
           logPath,
-          startedAt: now,
-          pid: current.pid,
-          error: `The recorded service for ${endpointValue} (pid ${current.pid}) could not be verified; leaving it untouched`,
-          code: "unverified-record",
-        };
+          now,
+          "unverified-record",
+          `The recorded service for ${endpointValue} (pid ${pid}) could not be verified; leaving it untouched`,
+          { pid, record: serviceRecordRef(recorded) },
+        );
       } else {
         removeServiceState(this.serviceStatePath);
       }
     }
     const path = pythonPath.trim();
     if (!path)
-      return {
-        started: false,
-        alreadyRunning: false,
-        command: "",
+      return this.refused(
         logPath,
-        startedAt: now,
-        error: "Select a Python interpreter first",
-        code: "no-python",
-      };
+        now,
+        "no-python",
+        "Select a Python interpreter first",
+      );
     const check = await this.checkReme(path);
     if (!check.installed)
-      return {
-        started: false,
-        alreadyRunning: false,
-        command: "",
+      return this.refused(
         logPath,
-        startedAt: now,
-        error: "reme-ai is not installed in the selected interpreter",
-        code: "not-installed",
-      };
+        now,
+        "not-installed",
+        "reme-ai is not installed in the selected interpreter",
+      );
     if (!check.versionOk)
-      return {
-        started: false,
-        alreadyRunning: false,
-        command: "",
+      return this.refused(
         logPath,
-        startedAt: now,
-        error: `reme-ai ${
+        now,
+        "version-too-old",
+        `reme-ai ${
           check.version || "(unknown version)"
         } is older than ${MINIMUM_REME}; upgrade it first`,
-        code: "version-too-old",
-      };
+      );
     // Set before the spawn so a second request arriving while the service is
     // booting observes the first launch instead of spawning another one. It is
     // cleared again when the spawn fails, so a retry is possible immediately.
@@ -574,15 +589,12 @@ export class ReMeEnvManager {
       return result;
     } catch (error) {
       this.starting = undefined;
-      return {
-        started: false,
-        alreadyRunning: false,
-        command: "",
+      return this.refused(
         logPath,
-        startedAt: now,
-        error: `Could not start the ReMe service: ${safeError(error)}`,
-        code: "start-failed",
-      };
+        now,
+        "start-failed",
+        `Could not start the ReMe service: ${safeError(error)}`,
+      );
     }
   }
 }

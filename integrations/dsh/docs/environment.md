@@ -67,8 +67,13 @@ depending on the network.
 The installation is a Host-owned job:
 
 - It keeps running when the configuration page closes, and reopening the tab restores it for the same
-  interpreter.
+  interpreter. The Host looks the job up by interpreter, so two interpreters installing at the same time each
+  see their own progress.
 - Progress is polled by job id, so a second installation for another interpreter cannot replace what you see.
+  The install answer is bound to the interpreter that asked for it, so a late response after an interpreter
+  switch is dropped instead of showing another interpreter's job.
+- A successful install re-checks `reme-ai` for that interpreter, so the dependency card and **Start service**
+  follow the install without a manual **Check**.
 - **Cancel** stops pip and its build children, and the interpreter stays locked until the process has actually
   exited.
 - The log is written to `$DSH_HOME/reme-memory/install-<job>.log` and its tail is shown in place. Each install
@@ -97,8 +102,13 @@ DSH settings.
   ending.
 - The write is atomic and owner-only (0600 on POSIX); the previous file is kept as `.env.bak`, so a failed save
   cannot lose unrelated keys.
-- **Test LLM connection** runs a one-token `chat/completions` request from inside the workspace with the selected
-  interpreter, and adds a hint for `401`/`403` (key), `404` (model or base URL) and network errors.
+- **Test LLM connection** runs a one-token request from inside the workspace with the selected interpreter, and
+  adds a hint for `401`/`403` (key), `404` (model or base URL) and network errors. The request follows the
+  protocol of the `LLM_BACKEND` in the `.env`: `openai`, `dashscope`, `deepseek`, `moonshot` and `xai` use the
+  OpenAI-compatible `/chat/completions` (Bearer auth), `anthropic` uses `/v1/messages` (`x-api-key`), `gemini`
+  uses `/v1beta/models/<model>:generateContent` (`x-goog-api-key`) and `ollama` uses `/api/chat` (a local server
+  needs no key). Gemini and Ollama are probed with their own endpoint when the `.env` names no base URL, because
+  ReMe's credentials for them do not read that variable.
 - Drafts are bound to the workspace they were typed in: switching the workspace drops them, so a key typed for
   one workspace cannot be saved into another.
 
@@ -128,7 +138,9 @@ processes it manages when the Host exits. The plugin owns a small service adapte
   and Stop both leave the process and the record alone: Stop refuses, and Start reports an error instead of dropping
   the record. Discarding it would orphan a live service that the tab could never stop again. The card then offers
   **Forget this record**, which deletes only `service.json` and never signals the process; the user confirms what to do
-  with it themselves.
+  with it themselves. The Host names the record that blocked the action, and **Forget** targets exactly that record —
+  which may belong to another port, not to the endpoint on screen — together with its pid. When the record changed in
+  the meantime, the Host refuses instead of dropping the new record silently.
 - A service that occupies the port but fails the health check is reported as a conflict; if it is provably this
   plugin's service, the tab still offers **Stop**.
 - **Stop** tree-kills the recorded process (process group on POSIX, `taskkill /T /F` on Windows), waits for it to
@@ -190,7 +202,8 @@ in its own terminal if you want the tab to manage the next launch.
 from the tab to make it managed.
 
 **LLM test fails.** The result distinguishes `401`/`403` (key), `404` (model name or base URL) and network
-errors. The probe reads the workspace `.env`, so save before testing.
+errors. The probe reads the workspace `.env`, so save before testing, and it follows the `LLM_BACKEND` there: a
+native provider (Anthropic, Gemini, Ollama) is probed with its own protocol, not with an OpenAI-style request.
 
 ## Where the code lives
 

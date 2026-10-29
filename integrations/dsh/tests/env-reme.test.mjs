@@ -318,3 +318,33 @@ test("reuses the running job for the same interpreter and validates paths", (t) 
   assert.throws(() => jobs.start({ pythonPath: "\\python.exe" }));
   assert.equal(jobs.status("unknown-job"), null);
 });
+
+test("restores the running job of one interpreter, not the newest job", (t) => {
+  // Two interpreters may install at the same time, so "the newest job" is not
+  // necessarily the one a tab is looking for.
+  const { jobs } = makeJobs(t);
+  const first = jobs.start({ pythonPath: "C:\\env\\a\\python.exe" });
+  const second = jobs.start({ pythonPath: "C:\\env\\b\\python.exe" });
+  assert.notEqual(first.id, second.id);
+  assert.equal(jobs.status("", "C:\\env\\a\\python.exe")?.id, first.id);
+  assert.equal(jobs.status("", "C:\\env\\b\\python.exe")?.id, second.id);
+  // An interpreter without a running job has nothing to restore.
+  assert.equal(jobs.status("", "C:\\env\\c\\python.exe"), null);
+  // Without an interpreter the newest job overall is still reported.
+  assert.equal(jobs.status("")?.id, second.id);
+  assert.equal(jobs.status(first.id)?.id, first.id);
+  // A named job wins over the interpreter lookup: the poller asks for its own
+  // job by id.
+  assert.equal(jobs.status(first.id, "C:\\env\\b\\python.exe")?.id, first.id);
+});
+
+test("an interpreter is matched by its own path semantics", (t) => {
+  const { jobs } = makeJobs(t);
+  const started = jobs.start({ pythonPath: "C:\\env\\a\\python.exe" });
+  // Windows paths fold case and separators, so the same interpreter is found.
+  assert.equal(jobs.status("", "c:/env/a/python.exe")?.id, started.id);
+  // A POSIX path stays case-sensitive.
+  const posix = jobs.start({ pythonPath: "/opt/venv/bin/python" });
+  assert.equal(jobs.status("", "/opt/venv/bin/python")?.id, posix.id);
+  assert.equal(jobs.status("", "/opt/Venv/bin/python"), null);
+});

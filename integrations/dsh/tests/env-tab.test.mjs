@@ -5,6 +5,7 @@ import React from "react";
 import { act, create } from "react-test-renderer";
 
 import { ReMeEnvironmentTab, envZh } from "../dist/environment/client/tab.js";
+import { fill } from "../dist/environment/client/locales.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -1311,7 +1312,14 @@ test("an unverified record reports the pid it refused to touch", async (t) => {
   await act(async () => {
     buttonByText(renderer, envZh.forgetRecord).props.onClick();
   });
-  assert.ok(texts(renderer.toJSON()).join(" ").includes(envZh.forgetConfirm));
+  assert.ok(
+    texts(renderer.toJSON())
+      .join(" ")
+      .includes(
+        fill(envZh.forgetConfirmRecord, { endpoint: "http://127.0.0.1:2333" }),
+      ),
+    "the confirmation names the record it forgets",
+  );
   await act(async () => {
     buttonByText(renderer, envZh.forgetRecord).props.onClick();
   });
@@ -1325,4 +1333,258 @@ test("an unverified record reports the pid it refused to touch", async (t) => {
   const after = texts(renderer.toJSON()).join(" ");
   assert.equal(after.includes(envZh.forgetHint), false);
   assert.equal(after.includes(envZh.forgetRecord), false);
+});
+
+test("a successful install refreshes the dependency check", async (t) => {
+  // The card used to keep reporting "not installed" after a successful
+  // install, so Start stayed disabled until the user pressed Check by hand.
+  let checkCalls = 0;
+  const job = {
+    id: "install-1",
+    phase: "running",
+    pythonPath: SUGGESTED,
+    command: "pip install reme-ai[core]",
+    startedAt: new Date().toISOString(),
+    logPath: "C:\\Users\\test\\.reme\\install-1.log",
+    logTail: "",
+  };
+  const { renderer, calls, restore } = await mount(
+    {},
+    {
+      responses: {
+        "remeEnv/checkReme": () => {
+          checkCalls += 1;
+          return checkCalls === 1
+            ? {
+                installed: false,
+                version: "",
+                versionOk: false,
+                hasCore: false,
+                cliPath: "",
+                error: "",
+              }
+            : {
+                installed: true,
+                version: "0.4.0.9",
+                versionOk: true,
+                hasCore: true,
+                cliPath: "",
+                error: "",
+              };
+        },
+        "remeEnv/install": () => job,
+        "remeEnv/installStatus": (input) =>
+          input?.jobId
+            ? {
+                ...job,
+                phase: "succeeded",
+                finishedAt: new Date().toISOString(),
+              }
+            : null,
+        "remeEnv/serviceStatus": {
+          phase: "stopped",
+          managed: false,
+          endpoint: "http://127.0.0.1:2333",
+          logPath: "C:\\Users\\test\\.reme\\service.log",
+        },
+      },
+    },
+  );
+  t.after(restore);
+  assert.ok(texts(renderer.toJSON()).join(" ").includes(envZh.notInstalled));
+
+  await act(async () => {
+    buttonByText(renderer, envZh.installButton).props.onClick();
+  });
+  await act(async () => {
+    buttonByText(renderer, envZh.confirmInstall).props.onClick();
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+
+  const copy = texts(renderer.toJSON()).join(" ");
+  assert.ok(
+    copy.includes(envZh.installSucceeded),
+    "the install reports success",
+  );
+  // The dependency check ran again for this interpreter.
+  const checks = calls.rpc.filter(
+    (call) => call.method === "remeEnv/checkReme",
+  );
+  assert.ok(checks.length >= 2, "the check is rerun after the install");
+  assert.ok(
+    copy.includes("reme-ai 0.4.0.9"),
+    "the card shows the freshly installed version",
+  );
+  // Start is usable again now that the dependency is there.
+  assert.equal(
+    buttonByText(renderer, envZh.startService).props.disabled,
+    false,
+  );
+});
+
+test("an install answer for another interpreter is dropped", async (t) => {
+  let release;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  const job = {
+    id: "install-9",
+    phase: "running",
+    pythonPath: SUGGESTED,
+    command: "pip install reme-ai[core]",
+    startedAt: new Date().toISOString(),
+    logPath: "C:\\Users\\test\\.reme\\install-9.log",
+    logTail: "",
+  };
+  const { renderer, setValue, restore } = await mount(
+    {},
+    {
+      responses: {
+        "remeEnv/install": () => pending,
+        // The Host keeps reporting the job as running, so a job that leaks
+        // into the new interpreter stays visible instead of being wiped by the
+        // next poll.
+        "remeEnv/installStatus": (input) => (input?.jobId ? job : null),
+      },
+    },
+  );
+  t.after(restore);
+
+  await act(async () => {
+    buttonByText(renderer, envZh.reinstall).props.onClick();
+  });
+  await act(async () => {
+    buttonByText(renderer, envZh.confirmInstall).props.onClick();
+  });
+  // The interpreter changes while the install request is still in flight.
+  await act(async () => {
+    setValue({ pythonPath: ENVS[0].exe });
+  });
+  await act(async () => {
+    release(job);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  const copy = texts(renderer.toJSON()).join(" ");
+  // The job belongs to the previous interpreter: it must not be shown here,
+  // and it must not be cancellable from here either.
+  assert.equal(copy.includes(envZh.installing), false);
+  assert.equal(copy.includes(envZh.cancelInstall), false);
+});
+
+test("a running job is restored for the selected interpreter", async (t) => {
+  const job = {
+    id: "install-7",
+    phase: "running",
+    pythonPath: SUGGESTED,
+    command: "pip install reme-ai[core]",
+    startedAt: new Date().toISOString(),
+    logPath: "C:\\Users\\test\\.reme\\install-7.log",
+    logTail: "Collecting reme-ai",
+  };
+  const { renderer, calls, restore } = await mount(
+    {},
+    {
+      responses: {
+        "remeEnv/installStatus": (input) =>
+          input?.jobId || input?.pythonPath ? job : null,
+      },
+    },
+  );
+  t.after(restore);
+
+  assert.ok(
+    texts(renderer.toJSON()).join(" ").includes(envZh.installing),
+    "the running job is shown again",
+  );
+  // The Host is asked for the job of this interpreter, not for the newest job
+  // overall: another interpreter may be installing at the same time.
+  const lookups = calls.rpc.filter(
+    (call) => call.method === "remeEnv/installStatus",
+  );
+  assert.ok(lookups.length > 0);
+  assert.equal(lookups[0].input.pythonPath, SUGGESTED);
+});
+
+test("Forget targets the record the Host named, not the endpoint on screen", async (t) => {
+  const CARD = "http://127.0.0.1:2444";
+  const RECORD = "http://127.0.0.1:2333";
+  const stopped = {
+    phase: "stopped",
+    managed: false,
+    endpoint: CARD,
+    logPath: "C:\\Users\\test\\.reme\\service.log",
+  };
+  const { renderer, calls, restore } = await mount(
+    { endpoint: CARD },
+    {
+      responses: {
+        "remeEnv/serviceStatus": stopped,
+        "remeEnv/serviceStart": {
+          started: false,
+          alreadyRunning: false,
+          error: "The recorded service could not be verified",
+          code: "unverified-record",
+          pid: 6000,
+          record: { endpoint: RECORD, pid: 6000 },
+          command: "",
+          logPath: stopped.logPath,
+          startedAt: new Date().toISOString(),
+        },
+        "remeEnv/serviceForget": { forgotten: true, pid: 6000 },
+      },
+    },
+  );
+  t.after(restore);
+
+  await act(async () => {
+    buttonByText(renderer, envZh.startService).props.onClick();
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+  // A status read only covers the endpoint on screen, so it must not drop the
+  // record that belongs to the other endpoint. The service card owns the last
+  // "Check" button; the dependency card has one with the same label.
+  const rechecks = renderer.root.findAll(
+    (node) =>
+      node.type === "button" && textOf(node.props.children) === envZh.recheck,
+  );
+  await act(async () => {
+    rechecks.at(-1).props.onClick();
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+  assert.ok(
+    buttonByText(renderer, envZh.forgetRecord),
+    "the record-only way out survives a status read",
+  );
+  // The confirmation names the record that blocks the start.
+  await act(async () => {
+    buttonByText(renderer, envZh.forgetRecord).props.onClick();
+  });
+  assert.ok(
+    texts(renderer.toJSON()).join(" ").includes(RECORD),
+    "the confirmation names the blocked record",
+  );
+  await act(async () => {
+    buttonByText(renderer, envZh.forgetRecord).props.onClick();
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  const forget = calls.rpc.find(
+    (call) => call.method === "remeEnv/serviceForget",
+  );
+  assert.ok(forget, "forgetting reaches the Host");
+  assert.equal(
+    forget.input.endpoint,
+    RECORD,
+    "the record's own endpoint is used, not the endpoint on screen",
+  );
+  assert.equal(forget.input.expectPid, 6000, "the record is pinned by its pid");
 });

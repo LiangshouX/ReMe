@@ -99,6 +99,23 @@ function optionalPidField(
     fail(what);
 }
 
+/**
+ * The record a refused action was about. The Host names it so the client can
+ * offer a recovery for that record, which is not necessarily the endpoint the
+ * request was made for.
+ */
+function optionalRecordField(
+  body: Record<string, unknown>,
+  key: string,
+  what: string,
+): void {
+  const value = body[key];
+  if (value === undefined) return;
+  const entry = record(value, what);
+  stringField(entry, "endpoint", what);
+  optionalPidField(entry, "pid", what);
+}
+
 function arrayField(
   body: Record<string, unknown>,
   key: string,
@@ -247,6 +264,7 @@ export function parseServiceStart(value: unknown): ServiceStartResult {
   optionalStringField(body, "code", what);
   optionalStringField(body, "version", what);
   optionalPidField(body, "pid", what);
+  optionalRecordField(body, "record", what);
   return value as unknown as ServiceStartResult;
 }
 
@@ -257,6 +275,7 @@ export function parseServiceStop(value: unknown): ServiceStopResult {
   optionalStringField(body, "reason", what);
   optionalStringField(body, "code", what);
   optionalPidField(body, "pid", what);
+  optionalRecordField(body, "record", what);
   return value as unknown as ServiceStopResult;
 }
 
@@ -267,6 +286,7 @@ export function parseServiceForget(value: unknown): ServiceForgetResult {
   optionalStringField(body, "reason", what);
   optionalStringField(body, "code", what);
   optionalPidField(body, "pid", what);
+  optionalRecordField(body, "record", what);
   return value as unknown as ServiceForgetResult;
 }
 

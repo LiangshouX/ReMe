@@ -6,7 +6,9 @@ import { ReMeEnvGateway } from "../dist/environment/host/gateway.js";
 
 /** Manager stub: no subprocesses, just enough surface for the gateway. */
 function stubManager() {
+  const calls = [];
   return {
+    calls,
     detectPython: async () => ({
       platform: "win32",
       scannedAt: "",
@@ -30,11 +32,18 @@ function stubManager() {
       error: authToken ? "auth token forwarded" : "",
       checkedAt: "",
     }),
-    serviceForget: async (endpoint) => ({
-      forgotten: false,
-      reason: endpoint,
-      code: "no-record",
-    }),
+    installStatus: async (jobId, pythonPath) => {
+      calls.push({ method: "installStatus", jobId, pythonPath });
+      return null;
+    },
+    serviceForget: async (endpoint, expectPid) => {
+      calls.push({ method: "serviceForget", endpoint, expectPid });
+      return {
+        forgotten: false,
+        reason: endpoint,
+        code: "no-record",
+      };
+    },
   };
 }
 
@@ -42,15 +51,17 @@ function stubManager() {
 async function mounted() {
   const root = new Context();
   let realm;
+  let manager;
   await root.plugin((ctx) => {
     realm = ctx.isolate({ remeMemory: true });
   });
   await realm.plugin((ctx) => {
     ctx.provide("remeMemory", {});
-    ctx.provide("remeEnv", stubManager());
+    manager = stubManager();
+    ctx.provide("remeEnv", manager);
   });
   await realm.plugin(ReMeEnvGateway);
-  return { root, realm };
+  return { root, realm, manager };
 }
 
 test("gateway mounts without a service-key conflict and keeps the wire namespace", async () => {
@@ -146,4 +157,24 @@ test("serviceForget keeps the single-input convention and forwards the endpoint"
   });
   assert.equal(result.forgotten, false);
   assert.equal(result.reason, "http://127.0.0.1:2334");
+});
+
+test("the gateway forwards the interpreter lookup and the pinned record", async () => {
+  const { root, manager } = await mounted();
+  const receiver = root.reflect.get("remeEnvGateway", false);
+
+  // The tab restores the running job of one interpreter, not the newest job.
+  await receiver.installStatus({ pythonPath: "C:\\env\\a\\python.exe" });
+  const status = manager.calls.find((call) => call.method === "installStatus");
+  assert.equal(status.jobId, "");
+  assert.equal(status.pythonPath, "C:\\env\\a\\python.exe");
+
+  // The confirmed recovery targets the record the Host named, pinned by pid.
+  await receiver.serviceForget({
+    endpoint: "http://127.0.0.1:2333",
+    expectPid: 6000,
+  });
+  const forget = manager.calls.find((call) => call.method === "serviceForget");
+  assert.equal(forget.endpoint, "http://127.0.0.1:2333");
+  assert.equal(forget.expectPid, 6000);
 });

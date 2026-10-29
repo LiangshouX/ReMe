@@ -6,6 +6,8 @@ import { join } from "node:path";
 
 import {
   envSummary,
+  LLM_PROTOCOLS,
+  llmProtocolFor,
   maskSecret,
   mergeEnvFile,
   parseEnvFile,
@@ -197,4 +199,153 @@ test("runs the LLM probe inside the workspace and classifies failures", async (t
   );
   assert.equal(broken.ok, false);
   assert.match(broken.error, /ENOENT/);
+});
+
+test("the LLM probe speaks the protocol of the selected backend", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "reme-llm-backend-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const calls = [];
+  const io = {
+    run: async (exe, args, options) => {
+      calls.push({ exe, args, options });
+      return {
+        code: 0,
+        stdout: '{"ok": true, "status": 200, "latencyMs": 12, "error": ""}\n',
+        stderr: "",
+      };
+    },
+  };
+  const probe = async (backend) => {
+    writeFileSync(
+      join(directory, ".env"),
+      [
+        `LLM_BACKEND=${backend}`,
+        "LLM_MODEL_NAME=test-model",
+        "LLM_API_KEY=sk-test",
+        "LLM_BASE_URL=https://provider.invalid",
+      ].join("\n"),
+    );
+    calls.length = 0;
+    await testLlm(io, {
+      workspaceDir: directory,
+      pythonPath: "C:\\env\\python.exe",
+    });
+    return String(calls[0]?.args[1] ?? "");
+  };
+
+  // The OpenAI-compatible providers keep the OpenAI-style request.
+  const openai = await probe("openai");
+  assert.match(openai, /\/chat\/completions/);
+  assert.match(openai, /"Authorization"/);
+  assert.match(openai, /Bearer /);
+
+  // A native provider must not be probed with the OpenAI protocol: that would
+  // report a working configuration as broken.
+  const anthropic = await probe("anthropic");
+  assert.match(anthropic, /\/v1\/messages/);
+  assert.match(anthropic, /"x-api-key"/);
+  assert.match(anthropic, /anthropic-version/);
+  assert.doesNotMatch(anthropic, /\/chat\/completions/);
+
+  const gemini = await probe("gemini");
+  assert.match(gemini, /generateContent/);
+  assert.match(gemini, /"x-goog-api-key"/);
+  assert.doesNotMatch(gemini, /\/chat\/completions/);
+
+  const ollama = await probe("ollama");
+  assert.match(ollama, /\/api\/chat/);
+  assert.doesNotMatch(ollama, /"Authorization"/);
+
+  // An unknown backend falls back to ReMe's default rather than failing.
+  const unknown = await probe("something-else");
+  assert.match(unknown, /\/chat\/completions/);
+});
+
+test("the probe builds a valid request for every backend", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "reme-llm-request-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const model = "test-model";
+  for (const backend of Object.keys(LLM_PROTOCOLS)) {
+    const protocol = llmProtocolFor(backend);
+    // The body is a JSON template: the placeholder is replaced with the
+    // JSON-quoted model name, so the result must still be valid JSON.
+    const body = protocol.body.replace("{model}", JSON.stringify(model));
+    const parsed = JSON.parse(body);
+    assert.equal(typeof parsed, "object", `${backend} body is JSON`);
+    if (protocol.path.includes("{model}")) {
+      // The model belongs in the path, URL-encoded.
+      assert.ok(!protocol.body.includes("{model}"), `${backend} body`);
+      const url = `https://provider.invalid${protocol.path.replace(
+        "{model}",
+        encodeURIComponent(model),
+      )}`;
+      assert.ok(url.includes(model), `${backend} url carries the model`);
+    } else {
+      assert.ok(
+        protocol.body.includes("{model}"),
+        `${backend} carries the model in the body`,
+      );
+    }
+    // A base URL that already carries the provider's version suffix must not
+    // be doubled.
+    if (protocol.trimSuffix) {
+      const base = `https://provider.invalid${protocol.trimSuffix}`;
+      const trimmed = base.endsWith(protocol.trimSuffix)
+        ? base.slice(0, -protocol.trimSuffix.length)
+        : base;
+      const url = `${trimmed}${protocol.path}`;
+      assert.ok(
+        !url.includes(`${protocol.trimSuffix}${protocol.trimSuffix}`),
+        `${backend} does not double its version suffix`,
+      );
+    }
+  }
+});
+
+test("a backend that ignores LLM_BASE_URL is probed with its own endpoint", async (t) => {
+  // ReMe's Gemini and Ollama credentials do not read LLM_BASE_URL, so a
+  // configuration without it is the normal one. The probe must not report it
+  // as incomplete.
+  const directory = mkdtempSync(join(tmpdir(), "reme-llm-base-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const calls = [];
+  const io = {
+    run: async (exe, args) => {
+      calls.push({ exe, args });
+      return {
+        code: 0,
+        stdout: '{"ok": true, "status": 200, "latencyMs": 12, "error": ""}\n',
+        stderr: "",
+      };
+    },
+  };
+  const probe = async (backend) => {
+    writeFileSync(
+      join(directory, ".env"),
+      [
+        `LLM_BACKEND=${backend}`,
+        "LLM_MODEL_NAME=test-model",
+        "LLM_API_KEY=sk-test",
+      ].join("\n"),
+    );
+    calls.length = 0;
+    await testLlm(io, {
+      workspaceDir: directory,
+      pythonPath: "C:\\env\\python.exe",
+    });
+    return String(calls[0]?.args[1] ?? "");
+  };
+
+  const gemini = await probe("gemini");
+  assert.match(gemini, /generativelanguage\.googleapis\.com/);
+  assert.doesNotMatch(gemini, /LLM_BASE_URL"\)\)/);
+
+  // Ollama needs neither a base URL nor a key.
+  const ollama = await probe("ollama");
+  assert.match(ollama, /localhost:11434/);
+  assert.match(ollama, /if False and not key/);
+
+  // The OpenAI-compatible providers do read LLM_BASE_URL, so it stays required.
+  const openai = await probe("openai");
+  assert.match(openai, /missing\.append\("LLM_BASE_URL"\)/);
 });

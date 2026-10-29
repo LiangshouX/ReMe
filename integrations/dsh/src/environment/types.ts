@@ -161,7 +161,22 @@ export type ServiceStopReasonCode =
   | "no-record"
   | "foreign"
   | "unverified"
-  | "not-exited";
+  | "not-exited"
+  | "record-changed";
+
+/**
+ * Identity of the service record an action was refused on behalf of.
+ *
+ * The record is not necessarily the endpoint on screen: a launch for another
+ * port can block the start of this one. The Host names the record it could not
+ * act on, so the recovery action can target that record instead of guessing.
+ */
+export interface ServiceRecordRef {
+  /** Endpoint the record was written for. */
+  endpoint: string;
+  /** Recorded pid, when the record has one. */
+  pid?: number;
+}
 
 export interface ServiceStartResult {
   started: boolean;
@@ -174,6 +189,8 @@ export interface ServiceStartResult {
   /** English diagnostic; shown only when no known `code` applies. */
   error?: string;
   code?: ServiceStartErrorCode;
+  /** The record that blocked the start, when one did. */
+  record?: ServiceRecordRef;
 }
 
 export interface ServiceLog {
@@ -192,6 +209,8 @@ export interface ServiceStopResult {
   reason?: string;
   /** Stable reason the client localizes; `reason` stays for diagnostics. */
   code?: ServiceStopReasonCode;
+  /** The record that blocked the stop, when one did. */
+  record?: ServiceRecordRef;
 }
 
 /**
@@ -204,4 +223,6 @@ export interface ServiceForgetResult {
   pid?: number;
   reason?: string;
   code?: ServiceStopReasonCode;
+  /** The record that was refused, when one was. */
+  record?: ServiceRecordRef;
 }

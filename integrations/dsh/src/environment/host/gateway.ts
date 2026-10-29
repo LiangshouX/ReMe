@@ -81,9 +81,12 @@ export class ReMeEnvGateway extends TypertRemoteService {
   /** Latest (or named) install job progress, including the log tail. */
   @Remote("installStatus")
   async installStatus(
-    input: { jobId?: string } | undefined,
+    input: { jobId?: string; pythonPath?: string } | undefined,
   ): Promise<InstallStatus | null> {
-    return this.ctx.remeEnv.installStatus(input?.jobId ?? "");
+    return this.ctx.remeEnv.installStatus(
+      input?.jobId ?? "",
+      input?.pythonPath ?? "",
+    );
   }
 
   /** Ask a running install to stop; polling observes the cancelled phase. */
@@ -182,12 +185,19 @@ export class ReMeEnvGateway extends TypertRemoteService {
    * Drop the service record without signalling the process. This is the way
    * out of a live record whose identity cannot be verified, where Start and
    * Stop both refuse to act.
+   *
+   * `endpoint` is the record's own endpoint, which is not necessarily the one
+   * on screen, and `expectPid` pins the record so a replaced one is not
+   * dropped silently.
    */
   @Remote("serviceForget")
   async serviceForget(
-    input: { endpoint?: string } | undefined,
+    input: { endpoint?: string; expectPid?: number } | undefined,
   ): Promise<ServiceForgetResult> {
-    return this.ctx.remeEnv.serviceForget(input?.endpoint ?? "");
+    return this.ctx.remeEnv.serviceForget(
+      input?.endpoint ?? "",
+      typeof input?.expectPid === "number" ? input.expectPid : undefined,
+    );
   }
 
   /** Tail of the workspace service log for start-failure diagnosis. */

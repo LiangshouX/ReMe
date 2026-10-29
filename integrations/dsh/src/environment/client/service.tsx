@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { StatusRpc } from "../../client/status-page.js";
 import { safeError } from "../../endpoint.js";
+import { serviceEndpointKey } from "../endpoint-key.js";
 import type {
   HealthErrorCode,
+  ServiceRecordRef,
   ServiceStartResult,
   ServiceState,
 } from "../types.js";
@@ -52,6 +54,7 @@ const STOP_REASON_KEYS: Record<string, EnvKey> = {
   foreign: "stopForeign",
   unverified: "stopUnknownIdentity",
   "not-exited": "stopNotExited",
+  "record-changed": "stopRecordChanged",
 };
 
 function stopReasonText(
@@ -60,6 +63,34 @@ function stopReasonText(
 ): string {
   const key = result.code ? STOP_REASON_KEYS[result.code] : undefined;
   return key ? t(key) : result.reason || t("serviceError");
+}
+
+/**
+ * Codes whose refusal leaves the record as the only way out: Start and Stop
+ * both refuse to act on such a record, so it can only be forgotten.
+ */
+const RECORD_ONLY_CODES = new Set([
+  "unverified-record",
+  "previous-not-stopped",
+  "unverified",
+  "not-exited",
+]);
+
+/**
+ * The recovery a refused action allows.
+ *
+ * The Host names the record it refused on: that record may belong to another
+ * endpoint than the one on screen, and forgetting the endpoint on screen
+ * would be refused as foreign. A refusal that names no record (a conflict, a
+ * missing interpreter) has no record-only way out. An older Host names no
+ * record either, so the endpoint on screen stays the fallback.
+ */
+function recoveryFor(
+  result: { code?: string; record?: ServiceRecordRef },
+  endpoint: string,
+): ServiceRecordRef | undefined {
+  if (!result.code || !RECORD_ONLY_CODES.has(result.code)) return undefined;
+  return result.record ?? { endpoint };
 }
 
 export interface ServiceViewState {
@@ -79,8 +110,11 @@ export interface ServiceControl {
   stopping: boolean;
   /** Why the last Stop request left the service alone, if it did. */
   stopError: string;
-  /** The record cannot be cleared by Start/Stop; it can only be forgotten. */
-  canForget: boolean;
+  /**
+   * The record the Host refused to act on. It can only be forgotten, and
+   * forgetting targets this record, not the endpoint on screen.
+   */
+  forgetTarget?: ServiceRecordRef;
   forgetting: boolean;
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -111,7 +145,9 @@ export function useService(
   const [state, setState] = useState<ServiceViewState>({ phase: "checking" });
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState("");
-  const [canForget, setCanForget] = useState(false);
+  const [forgetTarget, setForgetTarget] = useState<
+    ServiceRecordRef | undefined
+  >(undefined);
   const [forgetting, setForgetting] = useState(false);
   const [tick, setTick] = useState(0);
   const [log, setLog] = useState<ServiceLogView>({
@@ -149,7 +185,7 @@ export function useService(
     setState({ phase: "checking" });
     setStopError("");
     setStopping(false);
-    setCanForget(false);
+    setForgetTarget(undefined);
     setForgetting(false);
   }, [endpoint]);
 
@@ -172,9 +208,16 @@ export function useService(
         );
         if (controller.signal.aborted || request !== statusSeq.current) return;
         // The record is gone (dead pid cleared by the Host, or just forgotten),
-        // so there is nothing left to forget.
+        // so there is nothing left to forget. This status read only covers the
+        // endpoint on screen, so a record for another endpoint stays.
         if (next.phase === "stopped" && next.pid === undefined)
-          setCanForget(false);
+          setForgetTarget((current) =>
+            current &&
+            serviceEndpointKey(current.endpoint) ===
+              serviceEndpointKey(endpoint)
+              ? undefined
+              : current,
+          );
         // A start this tab requested maps "stopped with a live pid" (the Host's
         // "launch still booting" signal) to `starting`; a plain status read
         // keeps the Host's phase, so a leftover process never locks the card.
@@ -247,12 +290,11 @@ export function useService(
         }
         // The Host refused because the record describes a live process it
         // cannot stop or verify. Neither Start nor Stop can act on it, so offer
-        // the record-only escape hatch.
-        if (
-          started.code === "unverified-record" ||
-          started.code === "previous-not-stopped"
-        )
-          setCanForget(true);
+        // the record-only escape hatch, aimed at the record the Host named.
+        // A refusal that names no record leaves an existing offer alone: the
+        // record it describes is still there.
+        const recovery = recoveryFor(started, endpoint);
+        if (recovery) setForgetTarget(recovery);
         applyState({ phase: "error", error: startErrorText(t, started) });
         return;
       }
@@ -283,7 +325,7 @@ export function useService(
           );
           if (controller.signal.aborted) return;
           if (status.phase === "running") {
-            setCanForget(false);
+            setForgetTarget(undefined);
             applyState({ phase: "running", data: status });
             return;
           }
@@ -353,9 +395,12 @@ export function useService(
       // A record the Host refuses to stop (unverifiable, or a process that
       // survived the force-kill) cannot be cleared by either button: offer the
       // record-only way out instead of leaving two actions that both fail.
-      if (result.stopped) setCanForget(false);
-      else if (result.code === "unverified" || result.code === "not-exited")
-        setCanForget(true);
+      const recovery = recoveryFor(result, target);
+      if (recovery) setForgetTarget(recovery);
+      // A stopped service has no record left; a refusal that names none (a
+      // foreign record, a missing one) leaves an existing offer alone.
+      else if (result.stopped || result.code === "no-record")
+        setForgetTarget(undefined);
       refresh();
     } catch (error) {
       if (endpointRef.current !== target) return;
@@ -368,30 +413,45 @@ export function useService(
   }, [applyState, endpoint, refresh, rpc, stopping, t]);
 
   const forget = useCallback(async () => {
-    if (forgetting) return;
-    const target = endpoint;
+    if (forgetting || !forgetTarget) return;
+    const card = endpoint;
+    // The record is named by the Host, not by the endpoint on screen, so the
+    // request carries the record's own endpoint and the pid it described.
+    const target = forgetTarget;
     setForgetting(true);
     try {
       const result = parseServiceForget(
-        await envCall(rpc, "serviceForget", { endpoint: target }),
+        await envCall(rpc, "serviceForget", {
+          endpoint: target.endpoint,
+          ...(target.pid === undefined ? {} : { expectPid: target.pid }),
+        }),
       );
-      if (endpointRef.current !== target) return;
+      if (endpointRef.current !== card) return;
       if (result.forgotten) {
-        setCanForget(false);
+        setForgetTarget(undefined);
         setStopError("");
         // Drop the stale pid immediately; the refresh confirms it.
         applyState({ phase: "checking" });
         refresh();
       } else {
         setStopError(stopReasonText(t, result));
+        if (result.code === "no-record") {
+          // The record is already gone: there is nothing left to forget, so the
+          // button must not offer an action that can never succeed.
+          setForgetTarget(undefined);
+        } else if (result.record) {
+          // The record changed while the user decided: adopt the one the Host
+          // names, so a retry acts on the record that is actually there.
+          setForgetTarget(result.record);
+        }
       }
     } catch (error) {
-      if (endpointRef.current !== target) return;
+      if (endpointRef.current !== card) return;
       applyState({ phase: "error", error: safeError(error) });
     } finally {
-      if (endpointRef.current === target) setForgetting(false);
+      if (endpointRef.current === card) setForgetting(false);
     }
-  }, [applyState, endpoint, forgetting, refresh, rpc, t]);
+  }, [applyState, endpoint, forgetTarget, forgetting, refresh, rpc, t]);
 
   const viewLog = useCallback(async () => {
     try {
@@ -413,7 +473,7 @@ export function useService(
     state,
     stopping,
     stopError,
-    canForget,
+    forgetTarget,
     forgetting,
     start,
     stop,
@@ -509,7 +569,7 @@ export function ServiceSection({
   current: boolean;
   onAutoStart(checked: boolean): void;
 }): JSX.Element {
-  const { state, stopping, stopError, canForget, forgetting, log } = control;
+  const { state, stopping, stopError, forgetTarget, forgetting, log } = control;
   const [confirming, setConfirming] = useState(false);
   const [forgetConfirm, setForgetConfirm] = useState(false);
   // The confirmation belongs to one phase and endpoint: keeping it open across
@@ -518,7 +578,7 @@ export function ServiceSection({
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setConfirming(false);
     setForgetConfirm(false);
-  }, [endpoint, state.phase, state.data?.pid, canForget]);
+  }, [endpoint, state.phase, state.data?.pid, forgetTarget]);
   // A conflict can still be our own unhealthy service (booting, wrong token);
   // offer the same Stop affordance instead of leaving the tab without a way
   // out other than editing the record by hand. `stopped`/`starting` with a
@@ -541,6 +601,9 @@ export function ServiceSection({
   // provably owned previous launch, discards a foreign record, and reports an
   // unverifiable one. Hiding Start would leave that card without a way out.
   const canRestart = state.phase === "stopped" && state.data?.pid !== undefined;
+  // The record can only be forgotten when the Host named one: it is the
+  // record-only way out of a process the Host refuses to signal.
+  const canForget = current && forgetTarget !== undefined;
 
   return (
     <section className="reme-env-card">
@@ -685,7 +748,11 @@ export function ServiceSection({
           {current && canForget ? (
             forgetConfirm ? (
               <div className="reme-env-confirm">
-                <p>{t("forgetConfirm")}</p>
+                <p>
+                  {fill(t("forgetConfirmRecord"), {
+                    endpoint: forgetTarget?.endpoint ?? "",
+                  })}
+                </p>
                 <button
                   type="button"
                   className="reme-settings-discard"

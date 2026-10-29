@@ -8,6 +8,7 @@ import { join } from "node:path";
 import {
   buildStartCommand,
   createServiceIO,
+  forgetService,
   ownsService,
   parseLocalEndpoint,
   readServiceState,
@@ -429,6 +430,9 @@ test("escalates to SIGKILL and keeps the record when the service never exits", a
   });
   assert.equal(stopped.stopped, false);
   assert.match(stopped.reason, /did not exit/);
+  // The record survives, so it is named: the tab can offer to forget exactly
+  // this record.
+  assert.deepEqual(stopped.record, { endpoint: ENDPOINT, pid: 999 });
   assert.deepEqual(calls.killTree, [999, 999]);
   assert.deepEqual(calls.force, [999]);
   // The pid survives in the record, so Stop can be tried again later.
@@ -453,8 +457,35 @@ test("refuses to stop a process whose identity cannot be verified", async (t) =>
   const stopped = await stopService(io, { statePath, endpoint: ENDPOINT });
   assert.equal(stopped.stopped, false);
   assert.match(stopped.reason, /could not be verified/);
+  // The record is named, so the client can offer the record-only way out.
+  assert.deepEqual(stopped.record, { endpoint: ENDPOINT, pid: 777 });
   assert.deepEqual(calls.killTree, []);
   assert.equal(readServiceState(statePath)?.pid, 777);
+});
+
+test("forgetting refuses a record that changed since it was inspected", async (t) => {
+  const { statePath } = tempState(t, "reme-changed-");
+  record(statePath, { pid: 999 });
+  const { calls } = fakeIO();
+  const changed = await forgetService({
+    statePath,
+    endpoint: ENDPOINT,
+    expectPid: 777,
+  });
+  assert.equal(changed.forgotten, false);
+  assert.equal(changed.code, "record-changed");
+  assert.deepEqual(changed.record, { endpoint: ENDPOINT, pid: 999 });
+  // The record is still there: dropping it would orphan the process.
+  assert.equal(readServiceState(statePath)?.pid, 999);
+  assert.deepEqual(calls.killTree, []);
+
+  const forgotten = await forgetService({
+    statePath,
+    endpoint: ENDPOINT,
+    expectPid: 999,
+  });
+  assert.equal(forgotten.forgotten, true);
+  assert.equal(readServiceState(statePath), undefined);
 });
 
 /* ------------------------------------------------------------------ */
