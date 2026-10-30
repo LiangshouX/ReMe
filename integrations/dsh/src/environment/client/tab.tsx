@@ -4,6 +4,8 @@ import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 import type { StatusRpc } from "../../client/status-page.js";
 import { safeError } from "../../endpoint.js";
 import { serviceEndpointKey } from "../endpoint-key.js";
+import { isLocalEndpoint } from "../endpoint-rules.js";
+import { hasCoreFeatures } from "../dependency.js";
 import type { HealthErrorCode, RemeCheck } from "../types.js";
 import type { ReMeSettings } from "../../types.js";
 import { DependencySection, useDependency } from "./dependency.js";
@@ -25,19 +27,6 @@ export interface ReMeEnvironmentTabProps {
   scope: ConfigForm<ReMeSettings>;
   rpc: StatusRpc;
   t: EnvTranslator;
-}
-
-/** Only a loopback HTTP endpoint can be managed as a local service. */
-function isLocalEndpoint(endpoint: string): boolean {
-  try {
-    const url = new URL(endpoint);
-    return (
-      url.protocol === "http:" &&
-      ["127.0.0.1", "localhost"].includes(url.hostname)
-    );
-  } catch {
-    return false;
-  }
 }
 
 function connectionBadge(
@@ -232,10 +221,7 @@ export function ReMeEnvironmentTab({
   const ready =
     current &&
     connection.phase === "ok" &&
-    (!local ||
-      (dependency.checkData?.installed === true &&
-        dependency.checkData.versionOk &&
-        dependency.checkData.hasCore));
+    (!local || hasCoreFeatures(dependency.checkData));
   const scannedAt = python.detection.data?.scannedAt
     ? Date.parse(python.detection.data.scannedAt)
     : Number.NaN;
@@ -342,7 +328,7 @@ export function ReMeEnvironmentTab({
             endpoint={endpoint}
             pythonPath={python.selectedPath}
             control={service}
-            remeInstalled={dependency.checkData?.installed === true}
+            remeCheck={dependency.checkData}
             autoStart={value?.autoStart === true}
             writable={snapshot.writable}
             current={serviceCurrent}

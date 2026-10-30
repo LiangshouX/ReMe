@@ -75,11 +75,14 @@ The installation is a Host-owned job:
 - A successful install re-checks `reme-ai` for that interpreter, so the dependency card and **Start service**
   follow the install without a manual **Check**.
 - **Cancel** stops pip and its build children, and the interpreter stays locked until the process has actually
-  exited.
+  exited. A process that ignores the request is force-killed; if even that is not confirmed, the job stays
+  _cancelling_ and the interpreter stays locked, because a second installation must not run while the first is
+  still unaccounted for. The tab keeps showing the job instead of reporting a completed cancellation.
 - The log is written to `$DSH_HOME/reme-memory/install-<job>.log` and its tail is shown in place. Each install
   opens a new file and only the newest 20 are kept; the long-lived service log rotates to `service.log.1` once it
   passes 5 MB.
-- When the plugin unloads, running jobs are stopped.
+- When the plugin unloads, running jobs are stopped through the same path: a graceful signal first, then a
+  force-kill, so a pip that ignores `SIGTERM` cannot outlive the Host.
 
 ## Workspace `.env`
 
@@ -94,8 +97,12 @@ DSH settings.
 - The workspace directory defaults to `~/.reme` and must be absolute; changing it reloads the `.env` it points at.
 - API keys are write-only: the Host returns a mask (last four characters) and a blank field means “keep the
   stored key”. Leaving a key untouched never rewrites it.
-- Emptying a non-secret field and saving **clears** it. Only fields you edited are written, so the rest of the
-  file keeps its comments, unknown keys and order.
+- Emptying a **secret** field and saving keeps the stored key, even when a replacement was typed first and then
+  cleared: a credential cannot be deleted by emptying its control, so the blank field always means “keep what is
+  stored”. Emptying a **non-secret** field and saving **clears** it. Only fields you edited are written, so the rest
+  of the file keeps its comments, unknown keys and order.
+- A save writes the edits that were submitted and leaves newer ones alone: typing another field while the save is in
+  flight keeps that text, and the card says that unsaved edits are still pending.
 - Saving validates the whole merged file, not just the values you typed: ReMe 0.4.0.x instantiates the embedding
   component unconditionally, so `EMBEDDING_API_KEY` must be non-empty even without vector search (`EMPTY` is the
   documented placeholder). A duplicated key is rewritten in every position, and the file keeps its own line
@@ -122,9 +129,11 @@ DSH settings.
 ## Connection testing
 
 **Test connection** in the hero asks the Host to `POST /health_check` on the configured endpoint. A healthy answer
-must contain a ReMe health report, so a generic HTTP server that answers `200` with `{}` is not reported as a
-running ReMe service. When the settings carry an `authToken`, the Host sends it as `Authorization: Bearer`, scoped
-to that endpoint.
+must contain a ReMe health report — a version, a health flag and its components — so a generic HTTP server that
+answers `200` with `{}` is not reported as a running ReMe service. The Host reuses the same ReMe client as the rest
+of the plugin, so the request, the authentication and the three-second timeout are the ones the service itself is
+called with. When the settings carry an `authToken`, the Host sends it as `Authorization: Bearer`, scoped to that
+endpoint.
 
 ## Service lifetime
 
@@ -185,8 +194,9 @@ there. Try a mirror. In a conda environment `pip` works, but a dedicated environ
 with other projects.
 
 **Saving `.env` is refused.** `LLM_API_KEY` and `EMBEDDING_API_KEY` must both be non-empty in the saved file;
-use `EMPTY` for the embedding key when vector search is off. An explicit clear of a required key is refused, and
-the file is left unchanged.
+use `EMPTY` for the embedding key when vector search is off. Emptying a secret field never reaches the file, so
+the stored key is kept; a required key that is not stored at all still fails the save, and the file is left
+unchanged.
 
 **The service reports “Port occupied”.** Something else listens on the endpoint. Change the port in the service
 URL (Memory settings) or stop the other program.
@@ -217,6 +227,9 @@ native provider (Anthropic, Gemini, Ollama) is probed with its own protocol, not
 ```text
 integrations/dsh/src/environment/
 ├── types.ts          shared, browser-safe RPC types
+├── env-fields.ts     the managed `.env` keys and the rules for updating them
+├── dependency.ts     what one interpreter can host
+├── endpoint-rules.ts the endpoints a local service can be managed on
 ├── host/             detection, install, service adapter, manager, gateway
 └── client/           the tab, one module per step, copy and styles
 ```

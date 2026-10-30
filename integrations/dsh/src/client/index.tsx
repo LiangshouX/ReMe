@@ -1,13 +1,9 @@
-import {
-  useCallback,
-  useEffect,
-  useReducer,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { SettingsFormModel } from "@deepseek-ai/dsh-client-ui-primitives";
-import type { SettingsFieldState } from "@deepseek-ai/dsh-client-ui-primitives";
+import type {
+  SettingsFieldState,
+  SettingsFormShell,
+} from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 
 import type { ReMeSettings } from "../types.js";
@@ -65,6 +61,53 @@ interface ClientContext {
 
 /** One control as the model currently stages it. */
 type FieldState = SettingsFieldState;
+
+/**
+ * The slice of DSH's snapshot store this card reads.
+ *
+ * `@deepseek-ai/dsh-client-store` is not a dependency of this package, so the
+ * store's own type is not available here; the card declares the two members it
+ * uses instead of depending on the package.
+ */
+interface BoundStore<T> {
+  getSnapshot(): T;
+  subscribe(listener: () => void): () => void;
+}
+
+/** Everything the card renders, rebuilt from the model on every publish. */
+interface CardState {
+  /** Whether the Host still serves this namespace to this client. */
+  status: "loading" | "ready" | "unavailable";
+  /** What a save would do, and whether one is crossing the wire. */
+  shell: SettingsFormShell;
+  /** Every control's staged state, keyed by field name. */
+  fields: Record<string, FieldState>;
+}
+
+/**
+ * Rebuild the card's view state from the model.
+ *
+ * The model publishes when the scope changes, when a draft is staged, when a
+ * save starts and when it settles, so this projection is the card's only
+ * source of truth: what it renders is what the model holds.
+ *
+ * The projection carries the model's own state and nothing the settings
+ * service owns: the store freezes what it is given, and the resolved section
+ * belongs to the service, which replaces it rather than editing it.
+ */
+function projectCard(
+  model: SettingsFormModel<ReMeSettings>,
+  scope: ConfigForm<ReMeSettings>,
+): CardState {
+  const fields: Record<string, FieldState> = {};
+  for (const spec of SETTINGS_SPECS)
+    fields[spec.field] = model.field(spec.field);
+  return {
+    status: scope.getSnapshot().status,
+    shell: model.shell(),
+    fields,
+  };
+}
 
 interface ReMeCardProps {
   scope: ConfigForm<ReMeSettings>;
@@ -296,23 +339,33 @@ function ReMeSettingsCard({
   envT,
   view,
 }: ReMeCardProps): JSX.Element | null {
-  const subscribe = useCallback(
-    (listener: () => void) => scope.subscribe(listener),
-    [scope],
-  );
-  const getSnapshot = useCallback(() => scope.getSnapshot(), [scope]);
-  const snapshot = useSyncExternalStore(subscribe, getSnapshot);
   // DSH's form model stages the drafts, marks the ones that are invalid and
   // writes every staged edit as one revision-fenced mutation, so this page owns
   // only its controls and the field specs behind them.
-  const [model] = useState(
-    () => new SettingsFormModel<ReMeSettings>(scope, SETTINGS_SPECS),
+  //
+  // The model, its actions and the store it publishes to are built once: the
+  // model owns one subscription to the scope, and `bind` registers one
+  // listener on the model, so a second build would publish every change twice.
+  const [form] = useState(() => {
+    const model = new SettingsFormModel<ReMeSettings>(scope, SETTINGS_SPECS);
+    return {
+      model,
+      actions: model.actions(),
+      store: model.bind(() =>
+        projectCard(model, scope),
+      ) as BoundStore<CardState>,
+    };
+  });
+  // The model publishes on a scope change, on every staged edit, when a save
+  // starts and when it settles. The card reads those publications and nothing
+  // else, so a staged edit repaints the controls on its own.
+  const state = useSyncExternalStore(
+    form.store.subscribe,
+    form.store.getSnapshot,
   );
   const disposeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
-  const [, publish] = useReducer((tick: number) => tick + 1, 0);
-  const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [tab, setTab] = useState<"memory" | "environment">("memory");
   useEffect(() => {
@@ -326,54 +379,47 @@ function ReMeSettingsCard({
     return () => {
       disposeTimer.current = setTimeout(() => {
         disposeTimer.current = undefined;
-        model.dispose();
+        form.model.dispose();
       }, 0);
     };
-  }, [model]);
+  }, [form.model]);
 
   if (view === "summary") return <>{t("description")}</>;
-  if (snapshot.status === "unavailable") return null;
+  if (state.status === "unavailable") return null;
 
-  const value = snapshot.value;
-  const shell = model.shell();
-  const actions = model.actions();
-  const field = (name: string): FieldState => model.field(name);
+  const { shell, fields } = state;
+  // The model's own saving state: it is true from the moment the save starts
+  // until the write settles, so the card keeps no second flag for it.
+  const saving = shell.saving;
   // "The maximum retry delay is at least the initial one" is a relation between
   // two fields, which a per-field spec cannot state, so the page keeps it.
-  const retryMax = field("autoMemoryRetryMaxMs").text.trim();
-  const retryBase = field("autoMemoryRetryMs").text.trim();
+  const retryMax = (fields["autoMemoryRetryMaxMs"]?.text ?? "").trim();
+  const retryBase = (fields["autoMemoryRetryMs"]?.text ?? "").trim();
   const inconsistent =
     retryMax !== "" && retryBase !== "" && Number(retryMax) < Number(retryBase);
   const blocked = shell.invalid || inconsistent;
   const edit = (name: string, text: string): void => {
     setSaved(false);
-    actions.edit(name, text);
-    // The model publishes to its bound stores; this page reads it directly, so
-    // every staged edit repaints the controls itself.
-    publish();
+    form.actions.edit(name, text);
   };
   const save = async (): Promise<void> => {
-    if (!shell.writable || !shell.dirty || blocked || busy) return;
+    const current = form.store.getSnapshot().shell;
+    if (!current.writable || !current.dirty || blocked || current.saving)
+      return;
     setSaved(false);
-    setBusy(true);
-    try {
-      await model.save();
-      const after = model.shell();
-      setSaved(!after.failed && !after.dirty);
-    } finally {
-      setBusy(false);
-      publish();
-    }
+    await form.model.save();
+    // The model published the settled state before its promise resolved, so the
+    // store already carries the outcome of the write.
+    const after = form.store.getSnapshot().shell;
+    setSaved(!after.failed && !after.dirty);
   };
   const reset = (): void => {
     setSaved(false);
-    for (const spec of SETTINGS_SPECS) actions.resetField(spec.field);
-    publish();
+    for (const spec of SETTINGS_SPECS) form.actions.resetField(spec.field);
   };
   const discard = (): void => {
     setSaved(false);
-    actions.discard();
-    publish();
+    form.actions.discard();
   };
 
   return (
@@ -418,18 +464,16 @@ function ReMeSettingsCard({
             ) : (
               <p className="reme-settings-muted">{t("loading")}</p>
             )
-          ) : value === undefined ? (
-            <p className="reme-settings-muted">{t("loading")}</p>
-          ) : (
+          ) : state.status === "ready" ? (
             <>
               {shell.dirty ? (
                 <p className="reme-settings-pending">{t("unsaved")}</p>
               ) : null}
               <fieldset
                 className="reme-settings-fields"
-                disabled={busy || !shell.writable}
+                disabled={saving || !shell.writable}
               >
-                <SettingsForm draft={field} edit={edit} t={t} />
+                <SettingsForm fields={fields} edit={edit} t={t} />
               </fieldset>
               {!shell.writable ? (
                 <p className="reme-settings-error" role="status">
@@ -445,7 +489,7 @@ function ReMeSettingsCard({
                 <button
                   type="button"
                   className="reme-settings-reset"
-                  disabled={!shell.writable || busy}
+                  disabled={!shell.writable || saving}
                   onClick={reset}
                 >
                   {t("reset")}
@@ -463,7 +507,7 @@ function ReMeSettingsCard({
                 <button
                   type="button"
                   className="reme-settings-discard"
-                  disabled={!shell.dirty || busy}
+                  disabled={!shell.dirty || saving}
                   onClick={discard}
                 >
                   {t("discard")}
@@ -471,13 +515,17 @@ function ReMeSettingsCard({
                 <button
                   type="button"
                   className="reme-settings-save"
-                  disabled={!shell.writable || !shell.dirty || blocked || busy}
+                  disabled={
+                    !shell.writable || !shell.dirty || blocked || saving
+                  }
                   onClick={() => void save()}
                 >
-                  {t(busy ? "saving" : "save")}
+                  {t(saving ? "saving" : "save")}
                 </button>
               </div>
             </>
+          ) : (
+            <p className="reme-settings-muted">{t("loading")}</p>
           )}
         </div>
       </div>
@@ -487,17 +535,17 @@ function ReMeSettingsCard({
 
 /** The memory-settings controls, all reading and writing through the model. */
 function SettingsForm({
-  draft,
+  fields,
   edit,
   t,
 }: {
-  draft: (name: string) => FieldState;
+  fields: Record<string, FieldState>;
   edit: (name: string, text: string) => void;
   t: Translator;
 }): JSX.Element {
-  const text = (name: string): string => draft(name).text;
-  const invalid = (name: string): boolean => draft(name).invalid;
-  const checked = (name: string): boolean => draft(name).text === "true";
+  const text = (name: string): string => fields[name]?.text ?? "";
+  const invalid = (name: string): boolean => fields[name]?.invalid ?? false;
+  const checked = (name: string): boolean => text(name) === "true";
   return (
     <>
       <section className="reme-settings-section">

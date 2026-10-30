@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import { safeError } from "../../endpoint.js";
 import { detectPythonEnvs } from "./detect.js";
+import { envUpdates, storedState } from "../env-fields.js";
+import { canHostService } from "../dependency.js";
 import { createInstallSpawner, InstallJobs, tailLog } from "./install.js";
 import { checkReme, MINIMUM_REME, remeVersionAtLeast } from "./reme.js";
 import { createNodeRunner } from "./runner.js";
@@ -162,7 +164,14 @@ export class ReMeEnvManager {
     } catch {
       // First write creates the file.
     }
-    const merged = mergeEnvFile(existing, values);
+    const stored = parseEnvFile(existing);
+    // The update rules are applied here as well as in the tab: a client that
+    // predates them must not be able to clear a stored credential by sending
+    // an empty value for it.
+    const merged = mergeEnvFile(
+      existing,
+      envUpdates(values, storedState(stored)),
+    );
     validateEnvUpdate(parseEnvFile(merged));
     writeEnvText(path, merged);
     return envSummary(path, dir);
@@ -553,21 +562,18 @@ export class ReMeEnvManager {
         "Select a Python interpreter first",
       );
     const check = await this.checkReme(path);
-    if (!check.installed)
+    // The same rule the tab uses to offer a start decides it here, so a
+    // button is never offered for an interpreter this refuses.
+    if (!canHostService(check))
       return this.refused(
         logPath,
         now,
-        "not-installed",
-        "reme-ai is not installed in the selected interpreter",
-      );
-    if (!check.versionOk)
-      return this.refused(
-        logPath,
-        now,
-        "version-too-old",
-        `reme-ai ${
-          check.version || "(unknown version)"
-        } is older than ${MINIMUM_REME}; upgrade it first`,
+        check.installed ? "version-too-old" : "not-installed",
+        check.installed
+          ? `reme-ai ${
+              check.version || "(unknown version)"
+            } is older than ${MINIMUM_REME}; upgrade it first`
+          : "reme-ai is not installed in the selected interpreter",
       );
     // Set before the spawn so a second request arriving while the service is
     // booting observes the first launch instead of spawning another one. It is

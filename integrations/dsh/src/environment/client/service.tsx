@@ -2,8 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { StatusRpc } from "../../client/status-page.js";
 import { safeError } from "../../endpoint.js";
 import { serviceEndpointKey } from "../endpoint-key.js";
+import { canHostService } from "../dependency.js";
 import type {
   HealthErrorCode,
+  RemeCheck,
   ServiceRecordRef,
   ServiceStartResult,
   ServiceState,
@@ -553,7 +555,7 @@ export function ServiceSection({
   endpoint,
   pythonPath,
   control,
-  remeInstalled,
+  remeCheck,
   autoStart,
   writable,
   current,
@@ -563,7 +565,8 @@ export function ServiceSection({
   endpoint: string;
   pythonPath: string;
   control: ServiceControl;
-  remeInstalled: boolean;
+  /** What the selected interpreter has; the shared rule decides a start. */
+  remeCheck: RemeCheck | undefined;
   autoStart: boolean;
   writable: boolean;
   /** False while the state on screen belongs to another endpoint. */
@@ -747,7 +750,7 @@ export function ServiceSection({
                 !current ||
                 state.phase === "starting" ||
                 state.phase === "conflict" ||
-                !remeInstalled ||
+                !canHostService(remeCheck) ||
                 !pythonPath
               }
               onClick={() => void control.start()}

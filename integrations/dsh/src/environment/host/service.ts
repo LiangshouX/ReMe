@@ -12,7 +12,10 @@ import { createConnection } from "node:net";
 import { basename, dirname } from "node:path";
 
 import { safeError } from "../../endpoint.js";
+import { ReMeClient } from "../../reme/client.js";
+import type { ReMeHealthResult } from "../../reme/types.js";
 import { serviceEndpointKey } from "../endpoint-key.js";
+import { parseLocalEndpoint } from "../endpoint-rules.js";
 import type {
   HealthErrorCode,
   ServiceForgetResult,
@@ -25,6 +28,7 @@ import { openAppendLog } from "./log.js";
 import { isWindowsPath } from "./paths.js";
 
 export { serviceEndpointKey } from "../endpoint-key.js";
+export { parseLocalEndpoint } from "../endpoint-rules.js";
 
 /**
  * The local ReMe service is a *detached* process: it outlives DSH, which is the
@@ -80,37 +84,6 @@ export interface ServiceIO {
 /** A pid we are willing to signal: > 1, so kill(0)/kill(-1) is impossible. */
 export function isValidPid(pid: unknown): pid is number {
   return typeof pid === "number" && Number.isInteger(pid) && pid > 1;
-}
-
-/**
- * Only loopback HTTP endpoints may be managed as a local service.
- */
-export function parseLocalEndpoint(endpoint: string): {
-  host: string;
-  port: number;
-} {
-  let url: URL;
-  try {
-    url = new URL(endpoint.trim());
-  } catch {
-    throw new TypeError("Invalid ReMe endpoint");
-  }
-  // The service this plugin launches is plain HTTP, so an https loopback URL
-  // could never become healthy and must not be offered as manageable.
-  if (url.protocol !== "http:")
-    throw new TypeError(
-      "Local service management requires an http:// endpoint",
-    );
-  // The service is launched with `service.host=127.0.0.1`; accepting an IPv6
-  // loopback would spawn a process that can never answer that endpoint.
-  if (!["127.0.0.1", "localhost"].includes(url.hostname))
-    throw new TypeError(
-      "Local service management requires an IPv4 loopback endpoint",
-    );
-  const port = Number(url.port || "80");
-  if (!Number.isInteger(port) || port < 1 || port > 65535)
-    throw new TypeError("Invalid ReMe endpoint port");
-  return { host: "127.0.0.1", port };
 }
 
 /**
@@ -692,66 +665,60 @@ export function forgetService(options: {
   return { forgotten: true, pid: persisted.pid };
 }
 
+/** How long the Host waits for a health answer before giving up. */
+const HEALTH_TIMEOUT_MS = 3_000;
+
+/**
+ * The Host's health verdict, taken from the shared ReMe client.
+ *
+ * The client already knows how to reach a ReMe service, how to authenticate
+ * against it and how to tell one from a generic HTTP server, so the Host
+ * reuses it instead of repeating that request logic. The stable codes stay:
+ * the tab localizes them instead of showing an English sentence.
+ */
+function healthFromResult(result: ReMeHealthResult): ServiceHealth {
+  const status = result.status ?? 0;
+  if (status === 0)
+    return {
+      ok: false,
+      version: "",
+      error: result.error || "The endpoint could not be reached",
+      code: "unreachable",
+    };
+  if (!result.ok) {
+    // The client reports an HTTP failure and a ReMe-reported error the same
+    // way; only the status tells them apart.
+    const code = status >= 200 && status < 300 ? "reme-error" : "http-status";
+    return {
+      ok: false,
+      version: "",
+      error:
+        code === "http-status" ? `HTTP ${status}` : "ReMe reported an error",
+      code,
+    };
+  }
+  // A 200 response is not a healthy ReMe: the health report has to parse.
+  if (!result.health)
+    return {
+      ok: false,
+      version: "",
+      error: "The endpoint did not answer with a ReMe health report",
+      code: "not-reme",
+    };
+  return { ok: true, version: result.health.version, error: "" };
+}
+
 /** Node-backed IO: fetch health, probe the port, spawn detached, tree-kill. */
 export function createServiceIO(): ServiceIO {
   return {
     async fetchHealth(endpoint, authToken) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 3000);
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-      };
-      if (authToken) headers.Authorization = `Bearer ${authToken}`;
-      try {
-        const response = await fetch(`${endpoint}/health_check`, {
-          method: "POST",
-          headers,
-          body: "{}",
-          signal: controller.signal,
-        });
-        const body = (await response.json().catch(() => ({}))) as {
-          success?: boolean;
-          metadata?: { health?: { version?: unknown } };
-        };
-        if (!response.ok)
-          return {
-            ok: false,
-            version: "",
-            error: `HTTP ${response.status}`,
-            code: "http-status" as const,
-          };
-        const health = body.metadata?.health;
-        if (body.success === false)
-          return {
-            ok: false,
-            version: "",
-            error: "ReMe reported an error",
-            code: "reme-error" as const,
-          };
-        // A generic HTTP server answering 200 with `{}` is not ReMe.
-        if (typeof health !== "object" || health === null)
-          return {
-            ok: false,
-            version: "",
-            error: "The endpoint did not answer with a ReMe health report",
-            code: "not-reme" as const,
-          };
-        const version = health.version;
-        return {
-          ok: true,
-          version: typeof version === "string" ? version : "",
-          error: "",
-        };
-      } catch (error) {
-        return {
-          ok: false,
-          version: "",
-          error: safeError(error),
-          code: "unreachable" as const,
-        };
-      } finally {
-        clearTimeout(timer);
-      }
+      const client = new ReMeClient({
+        endpoint,
+        requestTimeoutMs: HEALTH_TIMEOUT_MS,
+        backgroundTimeoutMs: HEALTH_TIMEOUT_MS,
+        ...(authToken ? { authToken } : {}),
+      });
+      return healthFromResult(await client.healthCheck());
     },
     portOpen(host, port) {
       return new Promise((resolve) => {

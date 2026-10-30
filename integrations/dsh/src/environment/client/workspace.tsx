@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { StatusRpc } from "../../client/status-page.js";
 import { safeError } from "../../endpoint.js";
+import {
+  ENV_FIELDS,
+  envUpdates,
+  MANAGED_KEYS,
+  storedState,
+} from "../env-fields.js";
 import { llmBackendOf } from "../llm-backend.js";
 import type { EnvEntry, EnvSummary, LlmTestResult } from "../types.js";
 import { fill, type EnvKey, type EnvTranslator } from "./locales.js";
@@ -32,6 +38,8 @@ interface EnvFieldSpec {
   options?: readonly string[];
   placeholder?: string;
   hint?: EnvKey;
+  /** The value a key that must not stay empty is written with. */
+  disabledValue?: string;
 }
 
 interface EnvGroup {
@@ -40,60 +48,130 @@ interface EnvGroup {
 }
 
 /**
- * The `.env` parameters this tab renders. One table drives both groups, so a
- * new model knob is a row rather than a repeated block of controls.
+ * The wording of one managed key.
+ *
+ * Only the copy lives here: the key list, the secret flags and the update
+ * rules come from the shared metadata, so the form and the Host cannot drift
+ * apart about the same file. The group a key belongs to is named here, once.
  */
-const ENV_GROUPS: EnvGroup[] = [
-  {
-    title: "llmGroup",
-    fields: [
-      {
-        key: "LLM_BACKEND",
-        label: "backendLabel",
-        kind: "select",
-        options: LLM_BACKENDS,
-      },
-      {
-        key: "LLM_MODEL_NAME",
-        label: "modelLabel",
-        kind: "text",
-        placeholder: "qwen3.7-plus",
-      },
-      { key: "LLM_API_KEY", label: "apiKeyLabel", kind: "secret" },
-      {
-        key: "LLM_BASE_URL",
-        label: "baseUrlLabel",
-        kind: "text",
-        placeholder: "https://…/v1",
-      },
-    ],
+interface EnvFieldCopy {
+  group: EnvKey;
+  label: EnvKey;
+  options?: readonly string[];
+  placeholder?: string;
+  hint?: EnvKey;
+}
+
+const ENV_FIELD_COPY: Record<string, EnvFieldCopy> = {
+  LLM_BACKEND: {
+    group: "llmGroup",
+    label: "backendLabel",
+    options: LLM_BACKENDS,
   },
-  {
-    title: "embeddingGroup",
-    fields: [
-      {
-        key: "EMBEDDING_BACKEND",
-        label: "backendLabel",
-        kind: "select",
-        options: EMBEDDING_BACKENDS,
-      },
-      {
-        key: "EMBEDDING_MODEL_NAME",
-        label: "modelLabel",
-        kind: "text",
-        placeholder: "text-embedding-v4",
-      },
-      { key: "EMBEDDING_API_KEY", label: "apiKeyLabel", kind: "secret" },
-      {
-        key: "EMBEDDING_BASE_URL",
-        label: "baseUrlLabel",
-        kind: "text",
-        placeholder: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        hint: "embeddingHint",
-      },
-    ],
+  LLM_MODEL_NAME: {
+    group: "llmGroup",
+    label: "modelLabel",
+    placeholder: "qwen3.7-plus",
   },
-];
+  LLM_API_KEY: { group: "llmGroup", label: "apiKeyLabel" },
+  LLM_BASE_URL: {
+    group: "llmGroup",
+    label: "baseUrlLabel",
+    placeholder: "https://…/v1",
+  },
+  EMBEDDING_BACKEND: {
+    group: "embeddingGroup",
+    label: "backendLabel",
+    options: EMBEDDING_BACKENDS,
+  },
+  EMBEDDING_MODEL_NAME: {
+    group: "embeddingGroup",
+    label: "modelLabel",
+    placeholder: "text-embedding-v4",
+  },
+  EMBEDDING_API_KEY: { group: "embeddingGroup", label: "apiKeyLabel" },
+  EMBEDDING_BASE_URL: {
+    group: "embeddingGroup",
+    label: "baseUrlLabel",
+    placeholder: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    hint: "embeddingHint",
+  },
+};
+
+/** The groups the form shows, in order. */
+const ENV_GROUP_TITLES: EnvKey[] = ["llmGroup", "embeddingGroup"];
+
+/**
+ * The `.env` parameters this tab renders, derived from the shared metadata.
+ *
+ * The shared list owns which keys exist, in which order, which of them are
+ * secrets and what an empty draft means; the wording comes from
+ * `ENV_FIELD_COPY`. A managed key without a copy would be missing from the
+ * form, which `tests/env-form.test.mjs` refuses.
+ */
+export const ENV_GROUPS: EnvGroup[] = ENV_GROUP_TITLES.map((title) => ({
+  title,
+  fields: ENV_FIELDS.flatMap((meta): EnvFieldSpec[] => {
+    const copy = ENV_FIELD_COPY[meta.key];
+    if (!copy || copy.group !== title) return [];
+    // A secret is a password field; a key with options is a select.
+    const kind: EnvFieldSpec["kind"] = meta.secret
+      ? "secret"
+      : copy.options
+      ? "select"
+      : "text";
+    return [
+      {
+        key: meta.key,
+        label: copy.label,
+        kind,
+        options: copy.options,
+        placeholder: copy.placeholder,
+        hint: copy.hint,
+        disabledValue: meta.disabledValue,
+      },
+    ];
+  }),
+}));
+
+/**
+ * Which managed keys the file already holds a value for.
+ *
+ * The tab reads this from the masked projection: a secret's own value never
+ * rides a response, but a secret that is set is still masked to a non-empty
+ * tail.
+ *
+ * A key the Host did not report counts as present: the placeholder that keeps
+ * an unset key non-empty must never overwrite a credential the summary did
+ * not mention.
+ */
+function storedValues(data: EnvSummary): Record<string, boolean> {
+  const masked: Record<string, string> = {};
+  for (const entry of data.entries) masked[entry.key] = entry.masked;
+  const stored = storedState(masked);
+  for (const key of MANAGED_KEYS) if (!(key in masked)) stored[key] = true;
+  return stored;
+}
+
+/**
+ * The draft entries a save did not resolve.
+ *
+ * The submission covered the keys the user touched: a value that travelled in
+ * the payload, or a blank secret that means "keep the stored credential". An
+ * entry whose value is still the submitted one is therefore resolved by the
+ * save, while a value typed after the submission stays in the draft.
+ */
+function remainingEdits(
+  values: Readonly<Record<string, string>>,
+  submitted: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const remaining: Record<string, string> = {};
+  for (const [key, value] of Object.entries(values)) {
+    const sent = submitted[key];
+    if (sent === undefined || sent !== value) remaining[key] = value;
+  }
+  return remaining;
+}
 
 interface EnvState {
   phase: "loading" | "ready" | "error";
@@ -106,6 +184,11 @@ interface EnvState {
 interface SaveResult {
   kind: "" | "saved" | "failed";
   message?: string;
+  /**
+   * True when the save left newer edits in the draft. The saved message then
+   * has to say so: the form is not clean.
+   */
+  pending?: boolean;
 }
 
 interface LlmTestState {
@@ -162,6 +245,16 @@ export function useWorkspace(
   // the previous workspace is dropped instead of shown against the new one.
   const latestDir = useRef(workspaceDir);
   const llmController = useRef<AbortController | undefined>(undefined);
+  // A mirror of the draft. A save resolves against the draft as it is at that
+  // moment, so the answer cannot depend on a React state updater that runs
+  // later — and the draft may have moved on while the save was in flight.
+  const draftRef = useRef<Draft>({ dir: "", values: {} });
+
+  /** Set the draft and keep the mirror in step with it. */
+  const applyDraft = useCallback((next: Draft) => {
+    draftRef.current = next;
+    setDraft(next);
+  }, []);
 
   useEffect(() => {
     latestDir.current = workspaceDir;
@@ -229,28 +322,27 @@ export function useWorkspace(
   );
   const edit = useCallback(
     (key: string, next: string) => {
-      setDraft({ dir: workspaceDir, values: { ...values, [key]: next } });
+      // The mirror is the freshest copy of the draft, so two edits in one
+      // tick cannot overwrite each other.
+      const current = draftRef.current;
+      const base = current.dir === workspaceDir ? current.values : {};
+      applyDraft({ dir: workspaceDir, values: { ...base, [key]: next } });
       setResult({ kind: "" });
     },
-    [values, workspaceDir],
+    [applyDraft, workspaceDir],
   );
 
   const save = useCallback(async () => {
     const dir = workspaceDir;
-    const pending = values;
+    // The submission is the draft as it stands now, not as it stood when the
+    // button was rendered.
+    const current = draftRef.current;
+    const pending = current.dir === dir ? current.values : {};
     if (!view.data || saving) return;
-    // Only touched keys travel: an untouched key keeps its stored value, and an
-    // empty touched value is an explicit clear rather than "no opinion".
-    const payload: Record<string, string> = { ...pending };
-    const embedding = view.data.entries.find(
-      (item) => item.key === "EMBEDDING_API_KEY",
-    );
-    if (
-      embedding &&
-      !embedding.set &&
-      pending["EMBEDDING_API_KEY"] === undefined
-    )
-      payload["EMBEDDING_API_KEY"] = "EMPTY";
+    // Only touched keys travel: an untouched key keeps its stored value, an
+    // empty touched value is an explicit clear, and a blank secret keeps the
+    // stored credential. The shared metadata owns those rules.
+    const payload = envUpdates(pending, storedValues(view.data));
     setSaving(true);
     setResult({ kind: "" });
     try {
@@ -259,15 +351,23 @@ export function useWorkspace(
       );
       if (latestDir.current !== dir) return;
       setEnv({ phase: "ready", data: summary, entriesFor: dir });
-      setDraft({ dir, values: {} });
-      setResult({ kind: "saved" });
+      // The save resolves the edits it carried; a value typed while it was in
+      // flight stays in the draft.
+      const latest = draftRef.current;
+      const remaining =
+        latest.dir === dir ? remainingEdits(latest.values, pending) : {};
+      if (latest.dir === dir) applyDraft({ dir, values: remaining });
+      setResult({
+        kind: "saved",
+        pending: Object.keys(remaining).length > 0,
+      });
     } catch (error) {
       if (latestDir.current !== dir) return;
       setResult({ kind: "failed", message: safeError(error) });
     } finally {
       setSaving(false);
     }
-  }, [rpc, saving, values, view.data, workspaceDir]);
+  }, [applyDraft, rpc, saving, view.data, workspaceDir]);
 
   const testLlm = useCallback(
     async (pythonPath: string) => {
@@ -379,9 +479,7 @@ export function useWorkspace(
           type="password"
           autoComplete="off"
           value={workspace.value(spec.key)}
-          placeholder={
-            entry?.masked ?? (spec.key === "EMBEDDING_API_KEY" ? "EMPTY" : "")
-          }
+          placeholder={entry?.masked ?? spec.disabledValue ?? ""}
           onChange={(event) => workspace.edit(spec.key, event.target.value)}
         />
       </EnvField>
@@ -547,7 +645,12 @@ export function WorkspaceSection({
                 <span className="reme-settings-result" role="status">
                   {result.kind === "saved" ? (
                     <span className="reme-settings-success">
-                      {fill(t("savedEnv"), { path: env.data.envPath })}
+                      {fill(
+                        // A save that left newer edits behind must not read
+                        // like a clean form.
+                        result.pending ? t("savedEnvPending") : t("savedEnv"),
+                        { path: env.data.envPath },
+                      )}
                     </span>
                   ) : null}
                   {result.kind === "failed" ? (

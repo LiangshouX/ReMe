@@ -56,6 +56,8 @@ export const envEn = {
   installing: "Installing",
   cancelInstall: "Cancel install",
   cancelling: "Cancelling…",
+  cancellingHint:
+    "The interpreter stays locked until the install process has actually stopped.",
   waitingForOutput: "Waiting for pip output…",
   installSucceeded:
     "ReMe installed. Search, automatic memory and memory consolidation are now available.",
@@ -91,6 +93,7 @@ export const envEn = {
   saveEnv: "Save to .env",
   savingEnv: "Saving…",
   savedEnv: "Saved to {path}",
+  savedEnvPending: "Saved to {path}. Newer edits are still pending.",
   saveEnvFailed: "Saving failed",
   testLlmButton: "Test LLM connection",
   testingLlm: "Testing…",
@@ -257,6 +260,7 @@ export const envZh: typeof envEn = {
   installing: "正在安装",
   cancelInstall: "取消安装",
   cancelling: "正在取消…",
+  cancellingHint: "在安装进程真正退出之前，该解释器会一直保持占用。",
   waitingForOutput: "等待 pip 输出…",
   installSucceeded: "ReMe 安装完成，搜索、自动记忆与记忆整理现已可用。",
   installFailed: "安装失败，请查看下方日志。",
@@ -290,6 +294,7 @@ export const envZh: typeof envEn = {
   saveEnv: "保存到 .env",
   savingEnv: "正在保存…",
   savedEnv: "已保存到 {path}",
+  savedEnvPending: "已保存到 {path}。仍有更新的修改待保存。",
   saveEnvFailed: "保存失败",
   testLlmButton: "测试 LLM 连接",
   testingLlm: "正在测试…",

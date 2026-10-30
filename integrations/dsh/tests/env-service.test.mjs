@@ -536,7 +536,19 @@ test("real IO accepts only a ReMe health report", async (t) => {
       response.end(
         JSON.stringify({
           success: true,
-          metadata: { health: { version: "0.4.2.1", healthy: true } },
+          metadata: {
+            health: { version: "0.4.2.1", healthy: true, components: {} },
+          },
+        }),
+      );
+    else if (path === "/partial")
+      // A health object that does not parse is not a ReMe health report: the
+      // shared client requires the version, the health flag and the
+      // components, so a generic `{}` never passes.
+      response.end(
+        JSON.stringify({
+          success: true,
+          metadata: { health: { version: "0.4.2.1" } },
         }),
       );
     else if (path === "/failing") {
@@ -561,6 +573,11 @@ test("real IO accepts only a ReMe health report", async (t) => {
   assert.match(empty.error, /ReMe health report/);
   // The client localizes the code instead of showing this English sentence.
   assert.equal(empty.code, "not-reme");
+
+  // A health report that does not carry the expected fields is not one.
+  const partial = await io.fetchHealth(`${base}/partial`, "");
+  assert.equal(partial.ok, false);
+  assert.equal(partial.code, "not-reme");
 
   const httpError = await io.fetchHealth(`${base}/failing`, "");
   assert.equal(httpError.code, "http-status");

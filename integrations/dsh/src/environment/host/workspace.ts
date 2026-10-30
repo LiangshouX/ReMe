@@ -11,25 +11,10 @@ import {
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
 import { safeError } from "../../endpoint.js";
+import { MANAGED_KEYS, SECRET_KEYS } from "../env-fields.js";
 import { DEFAULT_LLM_BACKEND, llmBackendOf } from "../llm-backend.js";
 import type { EnvSummary, LlmTestResult } from "../types.js";
 import type { RunCommand } from "./runner.js";
-
-/** Keys the Environment tab manages; split for the two form groups. */
-const LLM_KEYS = [
-  "LLM_BACKEND",
-  "LLM_MODEL_NAME",
-  "LLM_API_KEY",
-  "LLM_BASE_URL",
-] as const;
-const EMBEDDING_KEYS = [
-  "EMBEDDING_BACKEND",
-  "EMBEDDING_MODEL_NAME",
-  "EMBEDDING_API_KEY",
-  "EMBEDDING_BASE_URL",
-] as const;
-const MANAGED_KEYS: readonly string[] = [...LLM_KEYS, ...EMBEDDING_KEYS];
-const SECRET_KEYS = new Set(["LLM_API_KEY", "EMBEDDING_API_KEY"]);
 
 /** Empty means "~/.reme"; "~" expands against home; relative paths are rejected. */
 export function resolveWorkspaceDir(raw: string, home: string): string {
@@ -107,7 +92,12 @@ export function maskSecret(value: string): string {
   return value.length > 4 ? `••••${value.slice(-4)}` : "••••";
 }
 
-/** Read-only projection for the tab: secrets are never returned in clear. */
+/**
+ * Read-only projection for the tab: secrets are never returned in clear.
+ *
+ * The managed keys and their order come from the shared metadata, so the Host
+ * projection and the browser form list the same keys in the same order.
+ */
 export function envSummary(path: string, workspaceDir: string): EnvSummary {
   let text = "";
   let exists = false;

@@ -177,6 +177,21 @@ function sameInterpreter(left: string, right: string): boolean {
   return interpreterKey(left) === interpreterKey(right);
 }
 
+/**
+ * Default grace period between the graceful termination signal and the
+ * force-kill of a cancelled job. pip gets a moment to clean up its build
+ * children before it is killed outright.
+ */
+const DEFAULT_KILL_GRACE_MS = 5_000;
+
+/**
+ * Default grace period for a disposed job.
+ *
+ * Zero: the plugin is unloading, so the force-kill follows the graceful signal
+ * immediately and a child can never outlive the Host.
+ */
+const DEFAULT_DISPOSE_GRACE_MS = 0;
+
 interface Job {
   id: string;
   phase: InstallPhase;
@@ -187,10 +202,31 @@ interface Job {
   exitCode?: number | null;
   logPath: string;
   child: InstallChild;
-  /** Set between a cancel request and the pip process actually exiting. */
+  /** Set between a termination request and the pip process actually exiting. */
   cancelling: boolean;
-  /** Fallback that settles the job if the process ignores the kill. */
-  cancelTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * Escalation timer that force-kills the child after the grace period.
+   *
+   * It never settles the job: only an observed exit does.
+   */
+  terminateTimer?: ReturnType<typeof setTimeout>;
+}
+
+export interface InstallJobsOptions {
+  spawner: InstallSpawner;
+  logDir: string;
+  /**
+   * Grace period between the graceful termination signal and the force-kill
+   * of a cancelled job. Defaults to 5 s, so pip can clean up before it is
+   * force-killed.
+   */
+  killGraceMs?: number;
+  /**
+   * Grace period between the graceful termination signal and the force-kill
+   * of a disposed job. Defaults to 0: the plugin is unloading, so the
+   * force-kill follows immediately and a child can never outlive the Host.
+   */
+  disposeGraceMs?: number;
 }
 
 /**
@@ -202,10 +238,13 @@ export class InstallJobs {
   private readonly jobs = new Map<string, Job>();
   private latest: string | undefined;
   private sequence = 0;
+  private readonly killGraceMs: number;
+  private readonly disposeGraceMs: number;
 
-  constructor(
-    private readonly options: { spawner: InstallSpawner; logDir: string },
-  ) {}
+  constructor(private readonly options: InstallJobsOptions) {
+    this.killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
+    this.disposeGraceMs = options.disposeGraceMs ?? DEFAULT_DISPOSE_GRACE_MS;
+  }
 
   start(request: InstallRequest): InstallStatus {
     const pythonPath = (request.pythonPath ?? "").trim();
@@ -215,10 +254,9 @@ export class InstallJobs {
       throw new TypeError(
         "Install requires an absolute Python interpreter path",
       );
-    const running = [...this.jobs.values()].find(
-      (job) =>
-        job.phase === "running" && sameInterpreter(job.pythonPath, pythonPath),
-    );
+    // The same lookup the status view uses: a job that is still running for
+    // this interpreter owns it, even when its termination is unconfirmed.
+    const running = this.runningFor(pythonPath);
     if (running) return this.snapshot(running);
     const args = pipArgs(request);
     const id = `install-${Date.now().toString(
@@ -297,30 +335,65 @@ export class InstallJobs {
    * Ask pip to stop. The job keeps the interpreter locked (phase stays
    * `running`, `cancelling` set) until the process has actually exited, so a
    * second installation cannot start while the first is still dying.
+   *
+   * A process that ignores the graceful signal is force-killed after the
+   * grace period. The escalation never settles the job: only an observed
+   * exit does, so a failed termination stays visible instead of being
+   * reported as a completed cancellation.
    */
   cancel(jobId?: string): boolean {
     const job = this.jobs.get(this.key(jobId));
     if (!job || job.phase !== "running" || job.cancelling) return false;
-    job.cancelling = true;
-    job.child.kill();
-    // A process that ignores the graceful kill must not keep the interpreter
-    // locked, so escalate before the last-resort fallback settles the job.
-    job.cancelTimer = setTimeout(() => {
-      job.child.kill(true);
-      job.cancelTimer = setTimeout(() => this.finish(job, null), 15_000);
-      job.cancelTimer.unref();
-    }, 5_000);
-    job.cancelTimer.unref();
+    this.terminate(job, this.killGraceMs);
     return true;
   }
 
-  /** Stop every running installation; called when the plugin unloads. */
+  /**
+   * Stop every running installation; called when the plugin unloads.
+   *
+   * The jobs are not settled here: only an observed exit settles them. The
+   * default grace period is zero, so the force-kill follows the graceful
+   * signal immediately and a child that ignores it cannot outlive the Host.
+   */
   dispose(): void {
     for (const job of this.jobs.values()) {
       if (job.phase !== "running") continue;
-      job.cancelling = true;
-      job.child.kill();
+      this.terminate(job, this.disposeGraceMs);
     }
+  }
+
+  /**
+   * The one termination path, shared by cancellation and disposal.
+   *
+   * It sends the graceful signal first and escalates to the force-kill after
+   * `graceMs`. It never settles the job: only an observed exit does, so the
+   * interpreter stays locked while the process is still alive and a failed
+   * termination stays visible.
+   */
+  private terminate(job: Job, graceMs: number): void {
+    this.clearTerminateTimer(job);
+    job.cancelling = true;
+    job.child.kill();
+    if (graceMs <= 0) {
+      // No grace period: the force-kill follows immediately, and nothing is
+      // left pending that could fire later or keep the Host alive.
+      job.child.kill(true);
+      return;
+    }
+    const timer = setTimeout(() => {
+      job.terminateTimer = undefined;
+      job.child.kill(true);
+    }, graceMs);
+    // A pending escalation must never keep the Host process alive.
+    timer.unref();
+    job.terminateTimer = timer;
+  }
+
+  /** Drop the pending escalation timer of a job. */
+  private clearTerminateTimer(job: Job): void {
+    if (!job.terminateTimer) return;
+    clearTimeout(job.terminateTimer);
+    job.terminateTimer = undefined;
   }
 
   private key(jobId?: string): string {
@@ -328,11 +401,10 @@ export class InstallJobs {
     return trimmed || this.latest || "";
   }
 
-  /** Settle a running job exactly once, from an exit or the cancel fallback. */
+  /** Settle a running job exactly once, from an observed exit. */
   private finish(job: Job, code: number | null): void {
     if (job.phase !== "running") return;
-    if (job.cancelTimer) clearTimeout(job.cancelTimer);
-    job.cancelTimer = undefined;
+    this.clearTerminateTimer(job);
     job.phase = job.cancelling
       ? "cancelled"
       : code === 0

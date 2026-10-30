@@ -17,6 +17,7 @@ import {
   testLlm,
   validateEnvUpdate,
 } from "../dist/environment/host/workspace.js";
+import { MANAGED_KEYS } from "../dist/environment/env-fields.js";
 
 test("resolves the workspace directory with ~/.reme defaults", () => {
   const home = process.platform === "win32" ? "C:\\Users\\u" : "/home/u";
@@ -129,6 +130,30 @@ test("summaries expose masked secrets and plain non-secret values", (t) => {
   assert.equal(key.value, "");
   assert.equal(key.masked, "••••cret");
   assert.doesNotMatch(JSON.stringify(summary), /super-secret/);
+});
+
+test("the summary lists the managed keys in the shared order and masks the secrets", (t) => {
+  // The Host projection and the browser form read the same key list, so the
+  // summary has to name the same keys in the same order.
+  const directory = mkdtempSync(join(tmpdir(), "reme-env-order-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, ".env");
+  writeFileSync(path, "EMBEDDING_API_KEY=EMPTY\nLLM_API_KEY=sk-super-secret\n");
+  const summary = envSummary(path, directory);
+  assert.deepEqual(
+    summary.entries.map((entry) => entry.key),
+    [...MANAGED_KEYS],
+  );
+  const key = summary.entries.find((entry) => entry.key === "LLM_API_KEY");
+  assert.equal(key.secret, true);
+  assert.equal(key.set, true);
+  assert.equal(key.value, "");
+  assert.equal(key.masked, "••••cret");
+  assert.doesNotMatch(JSON.stringify(summary), /super-secret/);
+  // A key the file does not hold is reported as unset, not as missing.
+  const base = summary.entries.find((entry) => entry.key === "LLM_BASE_URL");
+  assert.equal(base.set, false);
+  assert.equal(base.value, "");
 });
 
 test("validates the embedding key that aborts ReMe 0.4.0.x startup", () => {

@@ -580,6 +580,9 @@ export function DependencySection({
                 {t(install.job.cancelling ? "cancelling" : "cancelInstall")}
               </button>
             </div>
+            {install.job.cancelling ? (
+              <p className="reme-settings-muted">{t("cancellingHint")}</p>
+            ) : null}
             <pre className="reme-env-log">
               {install.job.logTail || t("waitingForOutput")}
             </pre>

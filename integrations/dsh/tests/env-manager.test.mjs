@@ -429,11 +429,9 @@ test("validates the merged .env, not just the submitted values", async (t) => {
   );
   assert.match(readFileSync(envPath, "utf8"), /^LLM_API_KEY=sk-keep$/m);
 
-  // An explicit clear leaves the file alone and reports why.
-  assert.throws(
-    () => manager.writeEnv(directory, { LLM_API_KEY: "" }),
-    /LLM_API_KEY is required/,
-  );
+  // An emptied secret never reaches the file: "leave blank to keep" wins over
+  // an explicit clear, so the stored key survives and the file is unchanged.
+  manager.writeEnv(directory, { LLM_API_KEY: "" });
   assert.match(readFileSync(envPath, "utf8"), /^LLM_API_KEY=sk-keep$/m);
 });
 

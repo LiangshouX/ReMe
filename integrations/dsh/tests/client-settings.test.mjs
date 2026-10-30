@@ -10,6 +10,33 @@ import { act, create } from "react-test-renderer";
 import { resolveConfig } from "../dist/config.js";
 
 /**
+ * The snapshot store the form model binds to.
+ *
+ * `@deepseek-ai/dsh-client-store` is not installed in this package, so the
+ * harness supplies the contract the real package offers: the store keeps the
+ * value it was given and hands that very reference back from `getSnapshot()`,
+ * and it notifies its listeners only when the value actually changed. The
+ * browser loads the real package; this stand-in only has to behave like it for
+ * the card's reads.
+ */
+function createSnapshotStore(init) {
+  let value = init;
+  const listeners = new Set();
+  return {
+    getSnapshot: () => value,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    set(next) {
+      if (Object.is(next, value)) return;
+      value = next;
+      for (const listener of [...listeners]) listener();
+    },
+  };
+}
+
+/**
  * Evaluate the SettingsFormModel this plugin links against, straight out of the
  * shipped primitives bundle.
  *
@@ -37,9 +64,13 @@ function loadSettingsFormModel() {
     start >= 0 && end > start,
     "unexpected @deepseek-ai/dsh-client-ui-primitives bundle layout",
   );
+  // The model binds its projections through `createSnapshotStore`, which the
+  // browser gets from `@deepseek-ai/dsh-client-store`; the harness passes the
+  // stand-in above instead.
   return new Function(
+    "createSnapshotStore",
     `${source.slice(start, end)}\nreturn SettingsFormModel;`,
-  )();
+  )(createSnapshotStore);
 }
 
 async function editor(mutate) {
@@ -145,6 +176,9 @@ async function editor(mutate) {
         input.props.onChange({ target: { value } });
       });
     },
+    input(index) {
+      return renderer.root.findAllByType("input")[index].props;
+    },
     button(label) {
       return renderer.root
         .findAllByType("button")
@@ -181,6 +215,76 @@ test("saves all edited fields in one revision-fenced mutation", async () => {
       },
     ]);
     assert.match(ui.text(), /saved/);
+    assert.equal(ui.button("save").props.disabled, true);
+  } finally {
+    await ui.close();
+  }
+});
+
+test("repaints the controls and the unsaved marker from the model's publishes", async () => {
+  const ui = await editor(async () => true);
+  try {
+    assert.doesNotMatch(ui.text(), /unsaved/);
+    // A staged edit publishes, and the card renders what the model holds: the
+    // control shows the draft and the card says the form is unsaved.
+    ui.change(0, "http://memory.test");
+    assert.equal(ui.input(0).value, "http://memory.test");
+    assert.match(ui.text(), /unsaved/);
+    // Dropping the drafts publishes as well, and the marker goes with them.
+    act(() => ui.button("discard").props.onClick());
+    assert.doesNotMatch(ui.text(), /unsaved/);
+    assert.notEqual(ui.input(0).value, "http://memory.test");
+  } finally {
+    await ui.close();
+  }
+});
+
+test("follows the namespace status through the model's publishes", async () => {
+  const ui = await editor(async () => true);
+  try {
+    assert.notEqual(ui.text(), "null");
+    // The card reads the scope through the model, so a status change reaches
+    // it as a publish rather than as a subscription of its own.
+    act(() => ui.update({ status: "loading" }));
+    assert.match(ui.text(), /loading/);
+    act(() => ui.update({ status: "unavailable" }));
+    assert.equal(ui.text(), "null");
+  } finally {
+    await ui.close();
+  }
+});
+
+test("the save button follows the model's own saving state", async () => {
+  let release = () => {};
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const ui = await editor(async () => {
+    await gate;
+    return true;
+  });
+  try {
+    ui.change(0, "http://memory.test");
+    await act(async () => {
+      ui.button("save").props.onClick();
+    });
+    // The write is in flight: the model's own state says so, and no second
+    // flag in the card could disagree with it.
+    const inFlight = ui.button("saving");
+    assert.ok(inFlight);
+    assert.equal(inFlight.props.disabled, true);
+    assert.equal(ui.button("save"), undefined);
+    assert.equal(ui.calls.length, 1);
+
+    await act(async () => {
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // The save landed: the button is idle again, disabled because the form
+    // holds no drafts, and the result is reported.
+    assert.equal(ui.button("saving"), undefined);
+    assert.match(ui.text(), /"saved"/);
     assert.equal(ui.button("save").props.disabled, true);
   } finally {
     await ui.close();
